@@ -1,0 +1,158 @@
+opengrok:
+  image:
+    repository: opengrok/docker
+    pullPolicy: IfNotPresent
+    tag: "latest"
+
+  service:
+    type: LoadBalancer
+    port: 8080
+    targetPort: 8080
+
+  # Liveness and Readiness Probes for OpenGrok
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 60
+    periodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 15
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    #  kubernetes.io/ingress.class: nginx
+    #  kubernetes.io/tls-acme: "true"
+    hosts:
+      - host: opengrok.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    #  - secretName: opengrok-tls
+    #    hosts:
+    #      - opengrok.local
+  
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  resources: {}
+    # limits:
+    #   cpu: 2000m
+    #   memory: 2Gi
+    # requests:
+    #   cpu: 500m
+    #   memory: 1Gi
+
+crpaasUi:
+  image:
+    repository: "ghcr.io/yukiuuh/crpaas-ui"
+    pullPolicy: IfNotPresent
+    tag: "latest"
+
+  service:
+    type: LoadBalancer
+    port: 8082
+    targetPort: 80
+
+  # Liveness and Readiness Probes for the frontend UI
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: crpaas-manager-ui.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+crpaasManager:
+  image:
+    repository: "ghcr.io/yukiuuh/crpaas-manager"
+    pullPolicy: IfNotPresent
+    tag: "latest"
+
+  service:
+    type: LoadBalancer
+    port: 8081
+    targetPort: 8080
+
+  # Liveness and Readiness Probes for the backend manager
+  livenessProbe:
+    httpGet:
+      path: /api/v1/config
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 20
+  readinessProbe:
+    httpGet:
+      path: /api/v1/config
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: crpaas-manager.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  gitCloner:
+    image:
+      repository: alpine/git
+      tag: "latest"
+    # Number of retries before marking the git-clone Job as failed.
+    backoffLimit: 3
+  
+  gitSsh:
+    sshKeyFileKey: "id_rsa"
+    secretName: "git-ssh-key-secret"
+
+storage:
+  source:
+    # For OpenGrok source code, requires ReadWriteMany (RWX)
+    storageClassName: "longhorn"
+    size: 50Gi
+
+  data:
+    # For OpenGrok index data, requires ReadWriteOnce (RWO)
+    storageClassName: "longhorn"
+    size: 50Gi
+
+  manager:
+    # For the manager's database (e.g., SQLite), requires ReadWriteOnce (RWO)
+    storageClassName: "longhorn"
+    size: 1Gi
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""

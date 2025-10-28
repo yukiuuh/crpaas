@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crpaas.fullname" . }}-opengrok-svc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opengrok
+spec:
+  type: {{ .Values.opengrok.service.type }}
+  ports:
+    - port: {{ .Values.opengrok.service.port }}
+      targetPort: {{ .Values.opengrok.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "crpaas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: opengrok
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crpaas.fullname" . }}-opengrok-reindex-svc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opengrok
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "crpaas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: opengrok

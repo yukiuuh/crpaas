@@ -1,0 +1,6 @@
+apiVersion: v2
+name: crpaas
+description: A Helm chart for deploying Code Reading Platform on Kubernetes.
+type: application
+version: 0.0.1
+appVersion: "v0.0.1"

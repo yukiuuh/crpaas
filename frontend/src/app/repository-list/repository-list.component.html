@@ -1,0 +1,240 @@
+<div class="container mt-4">
+  <!-- Toast Notification Container -->
+  <div *ngIf="toast.message" class="toast-container">
+    <clr-alert [clrAlertType]="toast.type" [clrAlertClosable]="true" (clrAlertClosedChange)="closeToast()">
+      <clr-alert-item>
+        <span class="alert-text">{{ toast.message }}</span>
+      </clr-alert-item>
+    </clr-alert>
+  </div>
+
+  <h2>Repositories</h2>
+
+  <clr-datagrid [(clrDgSelected)]="selected">
+    <clr-dg-action-bar>
+      <div class="btn-group">
+        <button type="button" class="btn btn-sm btn-primary" (click)="isAddModalOpen = true">
+          <cds-icon shape="plus"></cds-icon> ADD REPOSITORY
+        </button>
+        <button type="button" class="btn btn-sm" (click)="onSyncSelected()"
+          [disabled]="!selected || selected.length === 0">
+          <cds-icon shape="sync"></cds-icon> SYNC
+        </button>
+        <button type="button" class="btn btn-sm" (click)="openUpdateExpirationModal()"
+          [disabled]="!selected || selected.length === 0">
+          <cds-icon shape="calendar"></cds-icon> RENEW LEASE
+        </button>
+        <button type="button" class="btn btn-sm" (click)="openAutoSyncModal()"
+          [disabled]="!selected || selected.length === 0">
+          <cds-icon shape="alarm-clock"></cds-icon> AUTO-SYNC
+        </button>
+        <button type="button" class="btn btn-sm btn-danger-outline" (click)="openBatchDeleteConfirm()"
+          [disabled]="!selected || selected.length === 0">
+          <cds-icon shape="trash"></cds-icon> DELETE
+        </button>
+      </div>
+    </clr-dg-action-bar>
+    <clr-dg-column [clrDgField]="'pvc_path'">Name</clr-dg-column>
+    <clr-dg-column [clrDgField]="'repo_url'">Repository URL</clr-dg-column>
+    <clr-dg-column>Branch / Commit ID</clr-dg-column>
+    <clr-dg-column [clrDgField]="'status'">Status</clr-dg-column>
+    <clr-dg-column [clrDgSortBy]="'last_synced_at'">Last Synced At</clr-dg-column>
+    <clr-dg-column [clrDgSortBy]="'created_at'">Created At</clr-dg-column>
+    <clr-dg-column [clrDgSortBy]="'expired_at'">Expiration</clr-dg-column>
+    <clr-dg-column>Auto-Sync</clr-dg-column>
+
+    <clr-dg-row *clrDgItems="let repo of repositories; trackBy: trackById" [clrDgItem]="repo" class="datagrid-row">
+      <clr-dg-cell class="pvc-path-cell">
+        <a *ngIf="openGrokBaseUrl" [href]="openGrokBaseUrl + '/xref/' + repo.pvc_path + '/'" target="_blank">
+          {{ repo.pvc_path }}
+          <cds-icon shape="pop-out"></cds-icon>
+        </a>
+        <span *ngIf="!openGrokBaseUrl">{{ repo.pvc_path }}</span>
+      </clr-dg-cell>
+      <clr-dg-cell>{{ repo.repo_url }}</clr-dg-cell>
+      <clr-dg-cell><code>{{ repo.commit_id.substring(0, 12) }}</code></clr-dg-cell>
+      <clr-dg-cell class="status-cell">
+        <div [ngSwitch]="repo.status" class="status-cell">
+          <span *ngSwitchCase="'PENDING'" class="label clickable" (click)="openLogsModal(repo)">
+            <cds-icon shape="hourglass" status="info"></cds-icon>
+            {{ repo.status }}
+          </span>
+          <span *ngSwitchCase="'RUNNING'" class="label clickable" (click)="openLogsModal(repo)">
+            <cds-icon shape="sync" status="info"></cds-icon>
+            {{ repo.status }}
+          </span>
+          <span *ngSwitchCase="'COMPLETED'" class="label label-success">
+            <cds-icon shape="check-circle"></cds-icon>
+            {{ repo.status }}
+          </span>
+          <span *ngSwitchCase="'FAILED'" class="label label-danger clickable" (click)="openLogsModal(repo)">
+            <cds-icon shape="exclamation-triangle"></cds-icon>
+            {{ repo.status }}
+          </span>
+          <span *ngSwitchDefault class="label clickable" (click)="openLogsModal(repo)">{{ repo.status }}</span>
+        </div>
+      </clr-dg-cell>
+      <clr-dg-cell>
+        <ng-container *ngIf="repo.last_synced_at; else notSynced">
+          {{ repo.last_synced_at | date:'medium' }}
+        </ng-container>
+        <ng-template #notSynced>
+          <span class="label">Never</span>
+        </ng-template>
+      </clr-dg-cell>
+      <clr-dg-cell>{{ repo.created_at | date:'medium' }}</clr-dg-cell>
+      <clr-dg-cell>
+        <ng-container *ngIf="repo.expired_at; else indefinite">
+          {{ repo.expired_at | date:'medium' }}
+        </ng-container>
+        <ng-template #indefinite>
+          <span class="label">Never</span>
+        </ng-template>
+      </clr-dg-cell>
+      <clr-dg-cell>
+        <ng-container *ngIf="repo.auto_sync_enabled; else syncDisabled">
+          <span class="label label-info">
+            <cds-icon shape="alarm-clock" solid></cds-icon>
+            {{ repo.auto_sync_schedule }} UTC
+          </span>
+        </ng-container>
+        <ng-template #syncDisabled>
+          <span class="label">Disabled</span>
+        </ng-template>
+      </clr-dg-cell>
+
+      <!-- Expandable Row Detail -->
+      <clr-dg-row-detail *clrIfExpanded>
+        <h4 class="detail-title">Repository Details</h4>
+        <div class="clr-row">
+          <div class="clr-col-12 clr-col-md-6">
+            <dl class="key-value-list">
+              <dt>Commit ID</dt>
+              <dd><code>{{ repo.commit_id }}</code></dd>
+              <dt>Internal Job Name</dt>
+              <dd><code>{{ repo.job_name }}</code></dd>
+            </dl>
+          </div>
+          <div class="clr-col-12 clr-col-md-6">
+            <dl class="key-value-list">
+              <dt>Single Branch Clone</dt>
+              <dd>{{ repo.clone_single_branch ? 'Yes' : 'No' }}</dd>
+              <dt>Recursive Submodule Clone</dt>
+              <dd>{{ repo.clone_recursive ? 'Yes' : 'No' }}</dd>
+            </dl>
+          </div>
+        </div>
+      </clr-dg-row-detail>
+    </clr-dg-row>
+
+    <clr-dg-footer>
+      <clr-dg-pagination #pagination [clrDgPageSize]="10">
+        <clr-dg-page-size [clrPageSizeOptions]="[10,20,50,100]">Repositories per page</clr-dg-page-size>
+        {{pagination.firstItem + 1}} - {{pagination.lastItem + 1}}
+        of {{pagination.totalItems}} repositories
+      </clr-dg-pagination>
+    </clr-dg-footer>
+
+    <clr-dg-placeholder>No repositories have been configured yet.</clr-dg-placeholder>
+  </clr-datagrid>
+
+  <!-- Add Repository Modal -->
+  <clr-modal [(clrModalOpen)]="isAddModalOpen" [clrModalClosable]="false" [clrModalSize]="'xl'">
+    <h3 class="modal-title">Add Repository</h3>
+    <div class="modal-body">
+      <!-- The form component is now inside the modal -->
+      <app-repository-add-form *ngIf="isAddModalOpen" (repositoryAdded)="onRepositoryAdded()"
+        (cancel)="isAddModalOpen = false">
+      </app-repository-add-form>
+    </div>
+  </clr-modal>
+
+  <!-- Update Expiration Modal -->
+  <clr-modal [(clrModalOpen)]="isUpdateExpirationModalOpen" [clrModalClosable]="false">
+    <h3 class="modal-title">Update Repository Expiration</h3>
+    <div class="modal-body">
+      <form clrForm #expirationForm="ngForm">
+        <p *ngIf="selected && selected.length > 0">
+          Set a new retention period for the selected
+          <strong>{{ selected.length }}</strong>
+          <ng-container *ngIf="selected.length === 1; else pluralRepos"> repository</ng-container>
+          <ng-template #pluralRepos> repositories</ng-template>.
+        </p>
+        <clr-input-container>
+          <label for="new_retention_days">New Retention Period (days)</label>
+          <input type="number" id="new_retention_days" name="new_retention_days" [(ngModel)]="newRetentionDays" clrInput
+            min="0" required>
+          <clr-control-helper>Enter 0 for disable retention. The new period starts from now.</clr-control-helper>
+        </clr-input-container>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" (click)="isUpdateExpirationModalOpen = false">Cancel</button>
+      <button type="button" class="btn btn-primary" (click)="onUpdateExpiration()"
+        [disabled]="!expirationForm.form.valid">Update</button>
+    </div>
+  </clr-modal>
+
+  <!-- Auto-Sync Modal -->
+  <clr-modal [(clrModalOpen)]="isAutoSyncModalOpen" [clrModalClosable]="false">
+    <h3 class="modal-title">Update Auto-Sync Settings</h3>
+    <div class="modal-body">
+      <form clrForm #autoSyncForm="ngForm">
+        <p *ngIf="selected && selected.length > 0">
+          Update auto-sync settings for the selected
+          <strong>{{ selected.length }}</strong>
+          <ng-container *ngIf="selected.length === 1; else pluralReposSync"> repository</ng-container>
+          <ng-template #pluralReposSync> repositories</ng-template>.
+        </p>
+        <clr-toggle-container>
+          <label>Enable Daily Auto-Sync</label>
+          <clr-toggle-wrapper>
+            <input type="checkbox" clrToggle name="auto_sync_enabled" [(ngModel)]="autoSyncSettings.enabled" />
+          </clr-toggle-wrapper>
+        </clr-toggle-container>
+        <clr-input-container [class.clr-form-control-disabled]="!autoSyncSettings.enabled">
+          <label for="auto_sync_schedule">Sync Time (UTC)</label>
+          <input type="time" id="auto_sync_schedule" name="auto_sync_schedule" [(ngModel)]="autoSyncSettings.schedule"
+            clrInput [disabled]="!autoSyncSettings.enabled" required />
+        </clr-input-container>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" (click)="isAutoSyncModalOpen = false">Cancel</button>
+      <button type="button" class="btn btn-primary" (click)="onUpdateAutoSync()"
+        [disabled]="!autoSyncForm.form.valid">Update</button>
+    </div>
+  </clr-modal>
+
+  <!-- Logs Modal -->
+  <clr-modal [(clrModalOpen)]="isLogsModalOpen" [clrModalSize]="'xl'">
+    <h3 class="modal-title">Job Logs</h3>
+    <div class="modal-body">
+      <pre><code>{{ currentLogs }}</code></pre>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-primary" (click)="isLogsModalOpen = false">Close</button>
+    </div>
+  </clr-modal>
+
+  <!-- Delete Confirmation Modal -->
+  <clr-modal [(clrModalOpen)]="isDeleteModalOpen">
+    <h3 class="modal-title">Delete Repository</h3>
+    <div class="modal-body">
+      <p *ngIf="selected && selected.length > 0">
+        Are you sure you want to delete the selected
+        <strong>{{ selected.length }}</strong>
+        <ng-container *ngIf="selected.length === 1; else plural"> repository</ng-container>
+        <ng-template #plural> repositories</ng-template>?
+      </p>
+      <p>
+        This will delete the database record and trigger a cleanup job to remove the source code from the volume.
+        This action cannot be undone.
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" (click)="isDeleteModalOpen = false">Cancel</button>
+      <button type="button" class="btn btn-danger" (click)="onBatchDelete()">Yes, delete</button>
+    </div>
+  </clr-modal>
+</div>

@@ -1,0 +1,88 @@
+name: Release and Publish Images
+
+on:
+  release:
+    types: [created]
+
+env:
+  REGISTRY: ghcr.io # Registry for ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }} # Use the GitHub username/organization name in lowercase as the image owner
+
+jobs:
+  build-and-push-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # Required for writing to ghcr.io
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/crpaas-manager
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/crpaas-ui
+          tags: |
+            type=semver,pattern={{version}}
+
+      - name: Build and push crpaas-manager image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/crpaas-manager:${{ github.event.release.tag_name }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Build and push crpaas-ui image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/crpaas-ui:${{ github.event.release.tag_name }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  publish-helm-chart:
+    runs-on: ubuntu-latest
+    needs: build-and-push-images
+    permissions:
+      contents: write # Required to update Chart.yaml
+      packages: write # Required for writing to ghcr.io
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # We need to fetch all history and tags for yq to work with git tags
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Chart version and Push Helm chart to OCI
+        run: |
+          RELEASE_TAG=${{ github.event.release.tag_name }}
+          CHART_VERSION=${RELEASE_TAG#v} # Remove 'v' prefix if it exists (e.g., v1.0.0 -> 1.0.0)
+          helm package ./charts/crpaas --version $CHART_VERSION --app-version $RELEASE_TAG
+          helm push crpaas-${CHART_VERSION}.tgz oci://${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/helm-charts

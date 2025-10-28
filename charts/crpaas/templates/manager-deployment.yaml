@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crpaas.fullname" . }}-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "crpaas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: manager
+  template:
+    metadata:
+      labels:
+        {{- include "crpaas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: manager
+    spec:
+      {{- if .Values.rbac.create }}
+      serviceAccountName: {{ include "crpaas.serviceAccountName" . }}
+      {{- end }}
+      containers:
+        - name: manager
+          image: "{{ .Values.crpaasManager.image.repository }}:{{ .Values.crpaasManager.image.tag }}"
+          imagePullPolicy: {{ .Values.crpaasManager.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.crpaasManager.service.targetPort }}
+              protocol: TCP
+          env:
+            # Pass necessary information for the manager app to dynamically create Jobs
+            - name: SOURCE_CODE_PVC_NAME
+              value: {{ include "crpaas.fullname" . }}-source-code
+            - name: GIT_CLONER_IMAGE
+              value: "{{ .Values.crpaasManager.gitCloner.image.repository }}:{{ .Values.crpaasManager.gitCloner.image.tag }}"
+            - name: GIT_CLONER_BACKOFF_LIMIT
+              value: {{ .Values.crpaasManager.gitCloner.backoffLimit | quote }}
+            - name: GIT_CLONER_SCRIPT_CONFIGMAP_NAME
+              value: {{ include "crpaas.fullname" . }}-cloner-script
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OPEN_GROK_REINDEX_SERVICE_HOST
+              value: {{ include "crpaas.fullname" . }}-opengrok-reindex-svc
+            - name: OPEN_GROK_REINDEX_PORT
+              value: "5000"
+            - name: GIT_SSH_SECRET_NAME
+              value: {{ .Values.crpaasManager.gitSsh.secretName | quote }}
+            - name: GIT_SSH_KEY_FILE_KEY
+              value: {{ .Values.crpaasManager.gitSsh.sshKeyFileKey | quote }}
+            {{ if and .Values.opengrok .Values.opengrok.ingress .Values.opengrok.ingress.enabled }}
+            - name: OPEN_GROK_BASE_URL
+              value: "https://{{ (index .Values.opengrok.ingress.hosts 0).host }}"
+            {{ else }}
+            - name: OPEN_GROK_BASE_URL
+              value: ""
+            {{ end }}
+          livenessProbe:
+            {{- toYaml .Values.crpaasManager.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.crpaasManager.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.crpaasManager.resources | nindent 12 }}
+          volumeMounts:
+            - name: manager-data
+              mountPath: /data # (e.g., for storing the SQLite DB)
+      volumes:
+        - name: manager-data
+          persistentVolumeClaim:
+            claimName: {{ include "crpaas.fullname" . }}-manager-data

@@ -1,0 +1,34 @@
+apiVersion: skaffold/v4beta1
+kind: Config
+metadata:
+  name: crpaas
+
+build:
+  insecureRegistries: ["localhost:5000"]
+  local:
+    push: true
+  
+  artifacts:
+    - image: localhost:5000/crpaas-manager
+      context: ./backend
+      docker:
+        dockerfile: Dockerfile
+    - image: localhost:5000/crpaas-ui
+      context: ./frontend
+      docker:
+        dockerfile: Dockerfile
+
+deploy:
+  helm:
+    releases:
+      - name: crpaas
+        chartPath: ./charts/crpaas
+        # This section passes the image built by Skaffold to the Helm chart.
+        # The repository URL must match the image name from the build artifact.
+        setValues:
+          crpaasManager.image.repository: localhost:5000/crpaas-manager
+          crpaasUi.image.repository: localhost:5000/crpaas-ui
+          # The tag is set automatically by Skaffold.
+          crpaasManager.image.pullPolicy: Always
+          crpaasUi.image.pullPolicy: Always
+          crpaasUi.service.type: LoadBalancer

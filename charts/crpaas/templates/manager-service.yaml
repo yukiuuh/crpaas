@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crpaas.fullname" . }}-manager-svc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: manager
+spec:
+  type: {{ .Values.crpaasManager.service.type }}
+  ports:
+    - port: {{ .Values.crpaasManager.service.port }}
+      targetPort: {{ .Values.crpaasManager.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "crpaas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: manager

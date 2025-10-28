@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crpaas.fullname" . }}-cloner-script
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+data:
+  git-clone-or-pull.sh: |
+    #!/bin/sh
+    set -eu
+
+    REPO_URL=$1
+    TARGET_DIR=$2
+    COMMIT_OR_BRANCH=$3
+    CLONE_SINGLE_BRANCH=$4
+    CLONE_RECURSIVE=$5
+
+    # Ensure the parent directory exists
+    mkdir -p "$(dirname "$TARGET_DIR")"
+
+    if [ -d "$TARGET_DIR/.git" ]; then
+      echo "Repository exists. Fetching updates..."
+      cd "$TARGET_DIR"
+      git fetch origin --prune
+      # If submodules exist, update them
+      if [ -f ".gitmodules" ] && [ "$CLONE_RECURSIVE" = "true" ]; then
+        echo "Updating submodules..."
+        git submodule update --init --recursive
+      fi
+    else
+      echo "Repository does not exist. Cloning..."
+      CLONE_CMD="git clone"
+      if [ "$CLONE_SINGLE_BRANCH" = "true" ]; then
+        CLONE_CMD="$CLONE_CMD --single-branch --branch $COMMIT_OR_BRANCH"
+      fi
+      if [ "$CLONE_RECURSIVE" = "true" ]; then
+        CLONE_CMD="$CLONE_CMD --recursive"
+      fi
+      
+      echo "Executing: $CLONE_CMD ..."
+      $CLONE_CMD "$REPO_URL" "$TARGET_DIR"
+      cd "$TARGET_DIR"
+    fi
+
+    echo "Checking out '$COMMIT_OR_BRANCH'..."
+    git checkout "$COMMIT_OR_BRANCH"
+    echo "Operation completed successfully."

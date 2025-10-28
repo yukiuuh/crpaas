@@ -1,0 +1,43 @@
+{{- if .Values.opengrok.ingress.enabled -}}
+{{- $fullName := include "crpaas.fullname" . -}}
+{{- $svcPort := .Values.opengrok.service.port -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-opengrok
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+  {{- with .Values.opengrok.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.opengrok.ingress.className }}
+  ingressClassName: {{ .Values.opengrok.ingress.className }}
+  {{- end }}
+  {{- if .Values.opengrok.ingress.tls }}
+  tls:
+    {{- range .Values.opengrok.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.opengrok.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}-opengrok-svc
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+    {{- end }}
+{{- end }}

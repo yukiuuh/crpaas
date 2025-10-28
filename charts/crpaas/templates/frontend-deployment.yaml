@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crpaas.fullname" . }}-frontend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "crpaas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "crpaas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: "{{ .Values.crpaasUi.image.repository }}:{{ .Values.crpaasUi.image.tag }}"
+          imagePullPolicy: {{ .Values.crpaasUi.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.crpaasUi.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: API_UPSTREAM
+              value: "{{ include "crpaas.fullname" . }}-manager-svc:{{ .Values.crpaasManager.service.port }}"
+            # The value above will resolve to something like:
+            # crpaas-manager-svc:8081
+          livenessProbe:
+            {{- toYaml .Values.crpaasUi.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.crpaasUi.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.crpaasUi.resources | nindent 12 }}

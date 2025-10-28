@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crpaas.fullname" . }}-opengrok
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opengrok
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "crpaas.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: opengrok
+  template:
+    metadata:
+      labels:
+        {{- include "crpaas.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: opengrok
+    spec:
+      containers:
+        - name: opengrok
+          image: "{{ .Values.opengrok.image.repository }}:{{ .Values.opengrok.image.tag }}"
+          imagePullPolicy: {{ .Values.opengrok.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.opengrok.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: NOMIRROR
+              value: "1"
+          livenessProbe:
+            {{- toYaml .Values.opengrok.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.opengrok.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.opengrok.resources | nindent 12 }}
+          volumeMounts:
+            - name: source-code
+              mountPath: /opengrok/src
+              readOnly: true
+            - name: opengrok-data
+              mountPath: /opengrok/data
+      volumes:
+        - name: source-code
+          persistentVolumeClaim:
+            claimName: {{ include "crpaas.fullname" . }}-source-code
+        - name: opengrok-data
+          persistentVolumeClaim:
+            claimName: {{ include "crpaas.fullname" . }}-opengrok-data

@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crpaas.fullname" . }}-frontend-svc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  type: {{ .Values.crpaasUi.service.type }}
+  ports:
+    - port: {{ .Values.crpaasUi.service.port }}
+      targetPort: {{ .Values.crpaasUi.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "crpaas.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend

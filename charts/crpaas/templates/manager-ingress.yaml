@@ -1,0 +1,43 @@
+{{- if .Values.crpaasManager.ingress.enabled -}}
+{{- $fullName := include "crpaas.fullname" . -}}
+{{- $svcPort := .Values.crpaasManager.service.port -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-manager
+  labels:
+    {{- include "crpaas.labels" . | nindent 4 }}
+  {{- with .Values.crpaasManager.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.crpaasManager.ingress.className }}
+  ingressClassName: {{ .Values.crpaasManager.ingress.className }}
+  {{- end }}
+  {{- if .Values.crpaasManager.ingress.tls }}
+  tls:
+    {{- range .Values.crpaasManager.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.crpaasManager.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}-manager-svc
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+    {{- end }}
+{{- end }}

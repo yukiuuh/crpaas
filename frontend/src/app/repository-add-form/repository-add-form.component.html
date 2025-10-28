@@ -1,0 +1,50 @@
+<form clrForm class="clr-form" (ngSubmit)="onSubmit()" #repoForm="ngForm">
+  <clr-input-container>
+    <label for="repo_url" class="clr-required-mark">Repository URL</label>
+    <input type="text" id="repo_url" name="repo_url" [(ngModel)]="model.repo_url" clrInput required
+      placeholder="e.g., https://github.com/git/git.git">
+  </clr-input-container>
+  <clr-input-container>
+    <label for="commit_id" class="clr-required-mark">Branch / Commit ID</label>
+    <input type="text" id="commit_id" name="commit_id" [(ngModel)]="model.commit_id" clrInput required
+      placeholder="e.g., a1b2c3d4e5f6">
+  </clr-input-container>
+  <clr-input-container>
+    <label for="project_name">Project Name (Optional)</label>
+    <input type="text" id="project_name" name="project_name" [(ngModel)]="model.project_name" clrInput
+      placeholder="Custom name for OpenGrok project">
+  </clr-input-container>
+  <clr-input-container>
+    <label for="retention_days">Retention Period (days)</label>
+    <input type="number" id="retention_days" name="retention_days" [(ngModel)]="model.retention_days" clrInput min="0">
+    <clr-control-helper>Enter 0 for disable retention.</clr-control-helper>
+  </clr-input-container>
+  <clr-checkbox-container>
+    <label>Clone Options</label>
+    <clr-checkbox-wrapper>
+      <input type="checkbox" clrCheckbox name="clone_single_branch" [(ngModel)]="model.clone_single_branch" />
+      <label>Single branch clone (faster for large repos)</label>
+    </clr-checkbox-wrapper>
+    <clr-checkbox-wrapper>
+      <input type="checkbox" clrCheckbox name="clone_recursive" [(ngModel)]="model.clone_recursive" />
+      <label>Clone submodules recursively</label>
+    </clr-checkbox-wrapper>
+    <clr-control-helper>These options only apply when adding a new repository.</clr-control-helper>
+  </clr-checkbox-container>
+  <clr-toggle-container>
+    <label>Enable Daily Auto-Sync</label>
+    <clr-toggle-wrapper>
+      <input type="checkbox" clrToggle name="auto_sync_enabled" [(ngModel)]="model.auto_sync_enabled" />
+    </clr-toggle-wrapper>
+  </clr-toggle-container>
+  <clr-input-container [class.clr-form-control-disabled]="!model.auto_sync_enabled">
+    <label for="auto_sync_schedule">Sync Time (UTC)</label>
+    <input type="time" id="auto_sync_schedule" name="auto_sync_schedule" [(ngModel)]="model.auto_sync_schedule"
+      clrInput [disabled]="!model.auto_sync_enabled" required />
+  </clr-input-container>
+
+  <div class="modal-footer">
+    <button type="button" class="btn btn-outline" (click)="onCancel()">Cancel</button>
+    <button type="submit" class="btn btn-primary" [disabled]="!repoForm.form.valid">Add</button>
+  </div>
+</form>

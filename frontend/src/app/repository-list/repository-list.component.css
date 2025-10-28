@@ -1,0 +1,6 @@
+.status-cell .clickable {
+  cursor: pointer;
+}
+.status-cell .clickable:hover {
+  text-decoration: underline;
+}

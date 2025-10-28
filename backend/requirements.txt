@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+kubernetes
+pydantic
+aiosqlite
+httpx
+APScheduler
