@@ -4,6 +4,11 @@ opengrok:
     pullPolicy: IfNotPresent
     tag: "latest"
 
+  # Environment variables for the OpenGrok container
+  env:
+    NOMIRROR: "1"
+    SYNC_PERIOD_MINUTES: "60"
+
   service:
     type: LoadBalancer
     port: 8080
@@ -12,13 +17,13 @@ opengrok:
   # Liveness and Readiness Probes for OpenGrok
   livenessProbe:
     httpGet:
-      path: /
+      path: /xref
       port: http
     initialDelaySeconds: 60
     periodSeconds: 30
   readinessProbe:
     httpGet:
-      path: /
+      path: /xref
       port: http
     initialDelaySeconds: 30
     periodSeconds: 15
@@ -55,7 +60,7 @@ crpaasUi:
   image:
     repository: "ghcr.io/yukiuuh/crpaas-ui"
     pullPolicy: IfNotPresent
-    tag: "latest"
+    tag: "v0.0.2"
 
   service:
     type: LoadBalancer
@@ -91,7 +96,7 @@ crpaasManager:
   image:
     repository: "ghcr.io/yukiuuh/crpaas-manager"
     pullPolicy: IfNotPresent
-    tag: "latest"
+    tag: "v0.0.2"
 
   service:
     type: LoadBalancer

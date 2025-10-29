@@ -18,7 +18,6 @@ This chart deploys a "Code Reading Platform as a Service" (CRPaaS) on Kubernetes
 The system consists of three main components deployed as separate pods:
 
 1.  **Frontend (crpaas-manager-ui)**: The Angular-based web interface that users interact with.
-2.  **Prerequisites**
 2.  **Backend (crpaas-manager)**: A FastAPI application that manages the database of repositories and creates Kubernetes Jobs for Git operations.
 3.  **OpenGrok**: The core OpenGrok application that serves the indexed source code.
 
@@ -37,7 +36,7 @@ When a user adds a repository, the backend creates a temporary **Git Cloner Job*
 1.  Copy `values.yaml` locally and edit it to match your environment.
 
     ```bash
-    helm show values oci://ghcr.io/yukiuuh/helm-charts/crpaas > my-values.yaml
+    curl https://raw.githubusercontent.com/yukiuuh/crpaas/refs/heads/master/charts/crpaas/values.yaml > my-values.yaml
     ```
 
 2.  Ensure the `storage`, `ingress`, and image repository sections in `my-values.yaml` are configured correctly for your environment.
@@ -57,8 +56,12 @@ The following are some of the key parameters to configure in your `my-values.yam
 
 | Parameter | Description | Default |
 |---|---|---|
+| `opengrok.image.repository` | The container image for OpenGrok. | `opengrok/docker` |
+| `opengrok.image.tag` | The tag for the OpenGrok container image. | `latest` |
 | `crpaasUi.image.repository` | The container image for the frontend UI. | `ghcr.io/yukiuuh/crpaas-ui` |
+| `crpaasUi.image.tag` | The tag for the frontend UI container image. | `v0.0.2` |
 | `crpaasManager.image.repository` | The container image for the backend manager. | `ghcr.io/yukiuuh/crpaas-manager` |
+| `crpaasManager.image.tag` | The tag for the backend manager container image. | `v0.0.2` |
 | `opengrok.ingress.enabled` | Enable Ingress for the OpenGrok UI. | `false` |
 | `opengrok.ingress.hosts[0].host` | Hostname for the OpenGrok UI. | `opengrok.local` |
 | `crpaasUi.ingress.enabled` | Enable Ingress for the frontend UI. | `false` |
@@ -66,6 +69,8 @@ The following are some of the key parameters to configure in your `my-values.yam
 | `crpaasManager.ingress.enabled` | Enable Ingress for the backend manager. | `false` |
 | `crpaasManager.ingress.hosts[0].host` | Hostname for the backend manager. | `crpaas-manager.local` |
 | `crpaasManager.gitCloner.image.repository` | The image to use for the `git clone` jobs. | `alpine/git` |
+| `crpaasManager.gitCloner.image.tag` | The tag for the `git clone` job image. | `latest` |
+| `crpaasManager.gitCloner.backoffLimit` | Number of retries before marking the git-clone Job as failed. | `3` |
 | `crpaasManager.gitSsh.secretName` | The name of the Kubernetes secret containing the SSH private key for private repositories. | `git-ssh-key-secret` |
 | `crpaasManager.gitSsh.sshKeyFileKey` | The key within the secret that contains the SSH private key file. | `id_rsa` |
 | `storage.source.storageClassName` | The `StorageClass` for the shared source code volume (must support RWX). | `longhorn` |
@@ -74,8 +79,12 @@ The following are some of the key parameters to configure in your `my-values.yam
 | `storage.data.size` | The size of the OpenGrok index data volume. | `50Gi` |
 | `storage.manager.storageClassName` | The `StorageClass` for the manager's database volume (RWO is sufficient). | `longhorn` |
 | `storage.manager.size` | The size of the manager's database volume. | `1Gi` |
+| `opengrok.resources` | CPU/Memory resource requests and limits for OpenGrok. | `{}` |
+| `crpaasUi.resources` | CPU/Memory resource requests and limits for the frontend UI. | `{}` |
+| `crpaasManager.resources` | CPU/Memory resource requests and limits for the backend manager. | `{}` |
 | `rbac.create` | Specifies whether RBAC resources should be created. | `true` |
 | `serviceAccount.create` | Specifies whether a service account should be created. | `true` |
+| `serviceAccount.name` | The name of the service account to use. If not set and `create` is true, a name is generated. | `""` |
 
 ### Private Repositories via SSH
 
