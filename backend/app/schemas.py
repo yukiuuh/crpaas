@@ -86,9 +86,25 @@ class StorageUsageInfo(BaseModel):
     mountpoint: str
 
 
+class OpenGrokDeploymentStatus(BaseModel):
+    name: str
+    replicas: int
+    ready_replicas: int
+    available_replicas: int
+    unavailable_replicas: int
+    updated_replicas: int
+
+
 class OpenGrokPodStatus(BaseModel):
     pod_name: str
     pod_status: str
     pod_ip: Optional[str] = None
     node_name: Optional[str] = None
+    cpu_usage: Optional[str] = None
+    memory_usage: Optional[str] = None
     storage_usage: list[StorageUsageInfo]
+
+
+class OpenGrokStatusResponse(BaseModel):
+    deployment_status: Optional[OpenGrokDeploymentStatus] = None
+    pod_statuses: list[OpenGrokPodStatus]

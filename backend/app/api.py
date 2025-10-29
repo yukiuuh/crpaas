@@ -11,8 +11,8 @@ from kubernetes.client.rest import ApiException
 
 from . import k8s
 from .config import POD_NAMESPACE, OPEN_GROK_BASE_URL, DB_PATH
-from .database import get_db_session, custom_connection_factory
-from .schemas import RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, AppConfig, RepositoryAutoSyncUpdateRequest, OpenGrokPodStatus
+from .database import get_db_session
+from .schemas import RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, AppConfig, RepositoryAutoSyncUpdateRequest, OpenGrokPodStatus, OpenGrokDeploymentStatus, OpenGrokStatusResponse
 
 logger = logging.getLogger(f"uvicorn.{__name__}")
 router = APIRouter()
@@ -411,31 +411,50 @@ async def cleanup_expired_repositories():
             await db.close()
 
 
-@router.get("/opengrok/status", response_model=list[OpenGrokPodStatus])
+@router.get("/opengrok/status", response_model=OpenGrokStatusResponse)
 async def get_opengrok_status():
     """
-    Retrieves the status and storage usage of all running OpenGrok pods.
+    Retrieves the status, resource usage, and deployment info of OpenGrok.
     """
-    opengrok_pods = k8s.get_opengrok_pods()
+    resources = k8s.get_opengrok_resources()
+    deployment = resources.get("deployment")
+    pod_list = resources.get("pods", [])
 
-    if not opengrok_pods:
-        return []
+    deployment_status = None
+    if deployment:
+        # Create Deployment Status object once
+        status = deployment.status
+        deployment_status = OpenGrokDeploymentStatus(
+            name=deployment.metadata.name,
+            replicas=status.replicas or 0,
+            ready_replicas=status.ready_replicas or 0,
+            available_replicas=status.available_replicas or 0,
+            unavailable_replicas=status.unavailable_replicas or 0,
+            updated_replicas=status.updated_replicas or 0,
+        )
 
-    statuses = []
-    for pod in opengrok_pods:
+    pod_statuses = []
+    for pod in pod_list:
+        # Create a status object for each pod
         pod_name = pod.metadata.name
+        metrics = k8s.get_pod_metrics(pod_name)
         storage_list_of_dicts = k8s.get_storage_usage(pod_name)
         
-        status = OpenGrokPodStatus(
+        pod_status = OpenGrokPodStatus(
             pod_name=pod_name,
             pod_status=pod.status.phase,
             pod_ip=pod.status.pod_ip,
             node_name=pod.spec.node_name,
+            cpu_usage=metrics.get("cpu"),
+            memory_usage=metrics.get("memory"),
             storage_usage=storage_list_of_dicts,
         )
-        statuses.append(status)
+        pod_statuses.append(pod_status)
     
-    return statuses
+    return OpenGrokStatusResponse(
+        deployment_status=deployment_status,
+        pod_statuses=pod_statuses
+    )
 
 
 @router.get("/opengrok/logs", response_model=JobLogs)

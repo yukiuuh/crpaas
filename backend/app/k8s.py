@@ -31,6 +31,8 @@ except config.ConfigException:
 
 batch_v1_api = client.BatchV1Api()
 core_v1_api = client.CoreV1Api()
+apps_v1_api = client.AppsV1Api()
+custom_objects_api = client.CustomObjectsApi()
 
 
 # --- Helper Functions ---
@@ -240,24 +242,64 @@ def create_cleanup_job_manifest(job_name: str, pvc_path: str) -> client.V1Job:
 
 # --- OpenGrok Monitoring ---
 
-def get_opengrok_pods() -> list[client.V1Pod]:
+def get_opengrok_resources() -> dict:
     """
-    Finds and returns a list of running OpenGrok pods using their component label.
-    Returns an empty list if no pods are found.
+    Finds and returns OpenGrok's Deployment and associated running Pods.
+    Returns a dictionary with 'deployment' and 'pods' keys.
     """
+    label_selector = "app.kubernetes.io/component=opengrok"
     try:
+        # 1. Find the OpenGrok Deployment
+        deployment_list = apps_v1_api.list_namespaced_deployment(
+            namespace=POD_NAMESPACE,
+            label_selector=label_selector
+        )
+        if not deployment_list.items:
+            logger.warning("No OpenGrok Deployment found.")
+            return {"deployment": None, "pods": []}
+        
+        deployment = deployment_list.items[0]
+
+        # 2. Find running Pods for that Deployment
         pod_list = core_v1_api.list_namespaced_pod(
             namespace=POD_NAMESPACE,
-            label_selector="app.kubernetes.io/component=opengrok",
+            label_selector=label_selector,
             field_selector="status.phase=Running" # Only get running pods
         )
         if not pod_list.items:
             logger.warning("No running OpenGrok pod found.")
-            return []
-        return pod_list.items
+        
+        return {"deployment": deployment, "pods": pod_list.items}
+
     except ApiException as e:
-        logger.error(f"K8s API error when searching for OpenGrok pod: {e}")
-        return []
+        logger.error(f"K8s API error when searching for OpenGrok resources: {e}")
+        return {"deployment": None, "pods": []}
+
+def get_pod_metrics(pod_name: str) -> dict:
+    """
+    Retrieves CPU and Memory usage for a specific pod using the Metrics API.
+    Returns a dictionary with 'cpu' and 'memory' usage, or 'N/A' if not available.
+    Requires the Kubernetes Metrics Server to be installed in the cluster.
+    """
+    try:
+        metrics = custom_objects_api.get_namespaced_custom_object(
+            group="metrics.k8s.io",
+            version="v1beta1",
+            namespace=POD_NAMESPACE,
+            plural="pods",
+            name=pod_name
+        )
+        # Assuming the main container is the first one
+        if metrics.get('containers'):
+            usage = metrics['containers'][0]['usage']
+            return {"cpu": usage.get('cpu', 'N/A'), "memory": usage.get('memory', 'N/A')}
+        return {"cpu": "N/A", "memory": "N/A"}
+    except ApiException as e:
+        if e.status == 404:
+            logger.warning(f"Metrics for pod {pod_name} not found. Is Metrics Server installed?")
+        else:
+            logger.error(f"K8s Metrics API error for pod {pod_name}: {e}")
+        return {"cpu": "N/A", "memory": "N/A"}
 
 def get_pod_logs(pod_name: str, tail_lines: int = 200) -> str:
     """

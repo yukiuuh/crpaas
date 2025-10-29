@@ -1,58 +1,110 @@
 <div class="container mt-3">
-  <div *ngIf="status$ | async as statuses">
-    <div *ngIf="statuses.length > 0; else noPods">
-      <div *ngFor="let status of statuses" class="card mb-4">
-        <div class="card-header">
-          <strong>Pod:</strong> {{ status.pod_name }}
+  <div *ngIf="statusResponse$ | async as statusResponse; else loading">
+    <!-- Deployment Section -->
+    <div *ngIf="statusResponse.deployment_status as ds; else noDeployment">
+      <div>
+        <h3>Deployment: {{ ds.name }}</h3>
+      </div>
+      <div class="clr-row clr-justify-content-start">
+        <div class="clr-col-lg-3 clr-col-md-4 clr-col-sm-6">
+          <strong>Status:</strong>
+          <span class="label" [class.label-success]="ds.available_replicas > 0 && ds.available_replicas === ds.replicas"
+            [class.label-warning]="ds.available_replicas > 0 && ds.available_replicas < ds.replicas"
+            [class.label-danger]="ds.available_replicas === 0">
+            {{ ds.available_replicas > 0 ? 'Available' : 'Unavailable' }}
+          </span>
         </div>
-        <div class="card-body">
-          <div class="card-text">
-            <p><strong>Status:</strong> <span class="label"
-                [ngClass]="{'label-success': status.pod_status === 'Running', 'label-warning': status.pod_status === 'Pending', 'label-danger': status.pod_status !== 'Running' && status.pod_status !== 'Pending'}">
-                {{ status.pod_status }}
-              </span></p>
-            <p><strong>Pod IP:</strong> {{ status.pod_ip }}</p>
-            <p><strong>Node:</strong> {{ status.node_name }}</p>
-          </div>
-
-          <h5 class="mt-4">Storage Usage</h5>
-          <div class="table-responsive">
-            <table class="table table-striped table-bordered table-sm">
-              <thead class="thead-light">
-                <tr>
-                  <th>Mountpoint</th>
-                  <th>Use%</th>
-                  <th>Used / Size</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr *ngFor="let usage of status.storage_usage">
-                  <td>{{ usage.mountpoint }}</td>
-                  <td>
-                    <clr-progress-bar [clrValue]="getUsePercentValue(usage.use_percent)"
-                      clrColor="{'danger': getUsePercentValue(usage.use_percent) > 90, 'warning': getUsePercentValue(usage.use_percent) > 75, 'success': getUsePercentValue(usage.use_percent) <= 75}"
-                      clrLabeled>
-                    </clr-progress-bar>
-                  </td>
-                  <td>{{ usage.used_kb | bytes }} /{{ usage.size_kb | bytes }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <div class="clr-col-lg-3 clr-col-md-4 clr-col-sm-6">
+          <strong>Replicas:</strong> {{ ds.ready_replicas }} / {{ ds.replicas }} Ready
         </div>
-        <div class="card-footer">
-          <button class="btn btn-sm btn-outline-primary" (click)="showOpenGrokLogs(status.pod_name)">Show Logs</button>
+        <div class="clr-col-lg-3 clr-col-md-4 clr-col-sm-6">
+          <strong>Up-to-date:</strong> {{ ds.updated_replicas }}
+        </div>
+        <div class="clr-col-lg-3 clr-col-md-4 clr-col-sm-6">
+          <strong>Available:</strong> {{ ds.available_replicas }}
         </div>
       </div>
+
+      <!-- Pods Datagrid -->
+      <h4 class="mt-4">Pods</h4>
+      <clr-datagrid class="mt-2">
+        <clr-dg-column [clrDgField]="'pod_name'" [clrDgSortBy]="'pod_name'">Pod Name</clr-dg-column>
+        <clr-dg-column [clrDgField]="'pod_status'">Status</clr-dg-column>
+        <clr-dg-column [clrDgField]="'pod_ip'">Pod IP</clr-dg-column>
+        <clr-dg-column [clrDgField]="'node_name'">Node</clr-dg-column>
+        <clr-dg-column [clrDgSortBy]="cpuUsageComparator">CPU Usage</clr-dg-column>
+        <clr-dg-column [clrDgSortBy]="memoryUsageComparator">Memory Usage</clr-dg-column>
+
+        <clr-dg-placeholder>No running pods found for this deployment.</clr-dg-placeholder>
+
+        <clr-dg-row *clrDgItems="let pod of statusResponse.pod_statuses" [clrDgItem]="pod">
+          <clr-dg-cell>{{ pod.pod_name }}</clr-dg-cell>
+          <clr-dg-cell>
+            <span class="label"
+              [ngClass]="{'label-success': pod.pod_status === 'Running', 'label-warning': pod.pod_status === 'Pending', 'label-danger': pod.pod_status !== 'Running' && pod.pod_status !== 'Pending'}">
+              {{ pod.pod_status }}
+            </span>
+          </clr-dg-cell>
+          <clr-dg-cell>{{ pod.pod_ip || 'N/A' }}</clr-dg-cell>
+          <clr-dg-cell>{{ pod.node_name || 'N/A' }}</clr-dg-cell>
+          <clr-dg-cell>{{ parseCpuUsage(pod.cpu_usage) | number:'1.0-3' }} mCPU</clr-dg-cell>
+          <clr-dg-cell>{{ parseMemoryUsage(pod.memory_usage) | bytes }}</clr-dg-cell>
+
+          <!-- Expandable Row for Storage Details -->
+          <clr-dg-row-detail *clrIfExpanded>
+            <div class="clr-row">
+              <button class="btn btn-sm btn-link" (click)="showOpenGrokLogs(pod.pod_name)">View Logs</button>
+            </div>
+            <strong>Storage Usage:</strong>
+            <div class="table-responsive">
+              <table class="table table-striped table-bordered table-sm">
+                <thead class="thead-light">
+                  <tr>
+                    <th>Mountpoint</th>
+                    <th>Used / Total</th>
+                    <th>Use%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let usage of pod.storage_usage">
+                    <td>{{ usage.mountpoint }}</td>
+                    <td>{{ usage.used_kb | bytes }} / {{ usage.size_kb | bytes }}</td>
+                    <td>
+                      <clr-progress-bar [clrValue]="getUsePercentValue(usage.use_percent)"
+                        clrColor="{'danger': getUsePercentValue(usage.use_percent) > 90, 'warning': getUsePercentValue(usage.use_percent) > 75, 'success': getUsePercentValue(usage.use_percent) <= 75}"
+                        clrLabeled>
+                      </clr-progress-bar>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </clr-dg-row-detail>
+        </clr-dg-row>
+
+        <clr-dg-footer>{{statusResponse.pod_statuses.length}} pods</clr-dg-footer>
+      </clr-datagrid>
     </div>
-    <ng-template #noPods>
-      <p>No running OpenGrok pods found.</p>
+
+    <ng-template #noDeployment>
+      <div class="alert alert-warning" role="alert">
+        <div class="alert-items">
+          <div class="alert-item static">
+            <div class="alert-icon-wrapper">
+              <cds-icon class="alert-icon" shape="warning-standard"></cds-icon>
+            </div>
+            <span class="alert-text">
+              OpenGrok deployment not found in the cluster.
+            </span>
+          </div>
+        </div>
+      </div>
     </ng-template>
   </div>
 
-  <div *ngIf="!(status$ | async)">
-    <p>Loading OpenGrok status...</p>
-  </div>
+  <ng-template #loading>
+    <p><span class="spinner spinner-sm"></span> Loading OpenGrok status...</p>
+  </ng-template>
 </div>
 
 <!-- Log Modal -->

@@ -3,7 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable, forkJoin, of, shareReplay } from 'rxjs';
 import { Repository } from './repository';
 import { RepositoryRequest } from "./repository-request";
-import { OpenGrokPodStatus } from './opengrok-status';
+import { OpenGrokStatusResponse } from './opengrok-status';
 
 @Injectable({
   providedIn: 'root'
@@ -39,8 +39,8 @@ export class RepositoryService {
     return this.http.get<{ logs: string }>(url);
   }
 
-  getOpenGrokStatus(): Observable<OpenGrokPodStatus[]> {
-    return this.http.get<OpenGrokPodStatus[]>('/api/v1/opengrok/status');
+  getOpenGrokStatus(): Observable<OpenGrokStatusResponse> {
+    return this.http.get<OpenGrokStatusResponse>('/api/v1/opengrok/status');
   }
 
   getOpenGrokLogs(podName: string, tailLines: number = 500): Observable<{ logs: string }> {
