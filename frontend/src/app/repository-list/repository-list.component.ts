@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild } from '@angular/core';
 import { Repository } from '../repository';
 import { RepositoryService } from '../repository.service';
 import { Subject, Subscription, timer, merge } from 'rxjs';
@@ -15,6 +15,7 @@ import {
   popOutIcon,
   alarmClockIcon,
 } from '@cds/core/icon';
+import { RepositoryAddFormComponent } from '../repository-add-form/repository-add-form.component';
 import '@cds/core/icon/register.js';
 ClarityIcons.addIcons(trashIcon, hourglassIcon, syncIcon, checkCircleIcon, exclamationTriangleIcon, plusIcon, calendarIcon, popOutIcon, alarmClockIcon);
 
@@ -27,6 +28,9 @@ ClarityIcons.addIcons(trashIcon, hourglassIcon, syncIcon, checkCircleIcon, excla
 export class RepositoryListComponent implements OnInit, OnDestroy {
   repositories: Repository[] = [];
   selected: Repository[] = [];
+
+  @ViewChild('addForm')
+  addForm?: RepositoryAddFormComponent;
 
   private destroy$ = new Subject<void>();
   private forceUpdate$ = new Subject<void>();

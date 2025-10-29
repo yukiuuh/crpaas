@@ -1,4 +1,5 @@
 import logging
+import re
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,16 @@ async def request_repository(
     An optional `project_name` can be provided to customize the directory name.
     """
     try:
+        # Validate Git repository URL format before proceeding
+        git_url_pattern = re.compile(r"^((https?|git):\/\/.+?|git@.+?:.+?)\.git$")
+        if not git_url_pattern.match(req.repo_url):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Invalid 'repo_url'. It must be a valid Git URL ending in .git "
+                    "(e.g., 'https://...', 'git://...', or 'git@...')."
+                ),
+            )
         # 0. Determine expiration date
         expired_at = None
         # If retention_days is a positive number, calculate the expiration date.
@@ -45,13 +56,23 @@ async def request_repository(
 
         # 1. Determine the PVC path (project name)
         if req.project_name:
-            pvc_path = req.project_name
+            # Sanitize the provided project name to ensure it's safe for use as a directory name.
+            sanitized_name = k8s.sanitize_for_dns(req.project_name)
+            # Even if the validator in schemas.py passes, it might allow uppercase letters if not configured.
+            # This check ensures that the name doesn't change after sanitization (e.g., 'MyProject' -> 'myproject').
+            if sanitized_name != req.project_name:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Invalid 'project_name'. It must consist of lowercase alphanumeric characters or '-', and start and end with an alphanumeric character."
+                )
+            pvc_path = sanitized_name
             # Check if a project with this custom name already exists
-            async with db.execute("SELECT id FROM repositories WHERE pvc_path = ?", (pvc_path,)) as cursor:
-                if await cursor.fetchone():
+            async with db.execute("SELECT repo_url, commit_id FROM repositories WHERE pvc_path = ?", (pvc_path,)) as cursor:
+                conflicting_repo = await cursor.fetchone()
+                if conflicting_repo:
                     raise HTTPException(
                         status_code=409,
-                        detail=f"A project with the name '{pvc_path}' already exists. Please choose a different name."
+                        detail=f"Project name '{pvc_path}' is already in use by repository '{conflicting_repo['repo_url']}'. Please choose a different name."
                     )
         else:
             # Generate the path if not provided
@@ -60,13 +81,16 @@ async def request_repository(
             pvc_path = f"{repo_name_sanitized}-{commit_hash_short}"
 
         # Check for duplicate request (same repo and commit)
-        async with db.execute("SELECT * FROM repositories WHERE repo_url = ? AND commit_id = ?", 
+        async with db.execute("SELECT pvc_path FROM repositories WHERE repo_url = ? AND commit_id = ?", 
                               (req.repo_url, req.commit_id)) as cursor:
             existing = await cursor.fetchone()
             
         if existing:
             logger.info(f"Duplicate request: {req.repo_url} @ {req.commit_id}")
-            return RepositoryInfo(**existing)
+            raise HTTPException(
+                status_code=409,
+                detail=f"This repository and commit ID combination already exists under the project name '{existing['pvc_path']}'."
+            )
 
         # 2. Determine the Job name
         job_name = k8s.create_job_name(req.repo_url, req.commit_id)

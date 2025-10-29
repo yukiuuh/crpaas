@@ -136,13 +136,18 @@
   </clr-datagrid>
 
   <!-- Add Repository Modal -->
-  <clr-modal [(clrModalOpen)]="isAddModalOpen" [clrModalClosable]="false" [clrModalSize]="'xl'">
+  <clr-modal [(clrModalOpen)]="isAddModalOpen" [clrModalClosable]="false" clrModalSize="lg">
     <h3 class="modal-title">Add Repository</h3>
     <div class="modal-body">
       <!-- The form component is now inside the modal -->
-      <app-repository-add-form *ngIf="isAddModalOpen" (repositoryAdded)="onRepositoryAdded()"
+      <app-repository-add-form #addForm *ngIf="isAddModalOpen" (repositoryAdded)="onRepositoryAdded()"
         (cancel)="isAddModalOpen = false">
       </app-repository-add-form>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" (click)="isAddModalOpen = false">Cancel</button>
+      <button type="submit" class="btn btn-primary" (click)="addForm?.onSubmit()"
+        [disabled]="!addForm?.repoForm?.form?.valid || addForm?.isSubmitting">Add</button>
     </div>
   </clr-modal>
 

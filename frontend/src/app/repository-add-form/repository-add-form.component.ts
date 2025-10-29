@@ -1,4 +1,6 @@
-import { Component, EventEmitter, Output } from '@angular/core';
+import { Component, EventEmitter, Output, ViewChild } from '@angular/core';
+import { NgForm } from '@angular/forms';
+import { HttpErrorResponse } from '@angular/common/http';
 import { RepositoryService } from '../repository.service';
 import { RepositoryRequest } from '../repository-request';
 
@@ -9,6 +11,7 @@ import { RepositoryRequest } from '../repository-request';
   styleUrls: ['./repository-add-form.component.css']
 })
 export class RepositoryAddFormComponent {
+  @ViewChild('repoForm') repoForm!: NgForm;
   model: RepositoryRequest = {
     repo_url: '',
     commit_id: '',
@@ -20,12 +23,22 @@ export class RepositoryAddFormComponent {
     auto_sync_schedule: '00:00'
   };
 
+  isSubmitting = false;
+  errorMessage: string | null = null;
+
   @Output() repositoryAdded = new EventEmitter<void>();
   @Output() cancel = new EventEmitter<void>();
 
   constructor(private repositoryService: RepositoryService) { }
 
   onSubmit() {
+    if (!this.repoForm.form.valid) {
+      return;
+    }
+
+    this.isSubmitting = true;
+    this.errorMessage = null;
+
     // project_nameが空文字列の場合は送信しない
     const request: RepositoryRequest = { ...this.model };
     if (!request.project_name) {
@@ -41,8 +54,19 @@ export class RepositoryAddFormComponent {
       delete request.auto_sync_schedule;
     }
 
-    this.repositoryService.addRepository(request).subscribe(() => {
-      this.repositoryAdded.emit();
+    this.repositoryService.addRepository(request).subscribe({
+      next: () => {
+        this.isSubmitting = false;
+        this.repositoryAdded.emit();
+      },
+      error: (err: HttpErrorResponse) => {
+        this.isSubmitting = false;
+        if (err.status === 409) {
+          this.errorMessage = err.error.detail || 'A project with this name already exists.';
+        } else {
+          this.errorMessage = `Failed to add repository. Server returned status ${err.status}.`;
+        }
+      }
     });
   }
 

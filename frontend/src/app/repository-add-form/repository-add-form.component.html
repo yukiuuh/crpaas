@@ -1,18 +1,36 @@
-<form clrForm class="clr-form" (ngSubmit)="onSubmit()" #repoForm="ngForm">
+<form clrForm class="clr-form clr-form-full-width" (ngSubmit)="onSubmit()" #repoForm="ngForm">
+  <!-- Error Message Display -->
+  <div *ngIf="errorMessage" class="alert alert-danger">
+    <div class="alert-items">
+      <div class="alert-item static">
+        <div class="alert-icon-wrapper"><cds-icon class="alert-icon" shape="error-standard"></cds-icon></div>
+        <span class="alert-text">{{ errorMessage }}</span>
+      </div>
+    </div>
+  </div>
   <clr-input-container>
     <label for="repo_url" class="clr-required-mark">Repository URL</label>
     <input type="text" id="repo_url" name="repo_url" [(ngModel)]="model.repo_url" clrInput required
-      placeholder="e.g., https://github.com/git/git.git">
+      pattern="^((https?|git):\/\/.+?|git@.+?:.+?)\.git$"
+      placeholder="e.g., https://github.com/user/repo.git">
+    <clr-control-helper>Must be a valid Git URL ending in .git (https://..., git://..., or git&#64;...)</clr-control-helper>
+    <clr-control-error>Invalid format. Must be a valid Git URL</clr-control-error>
   </clr-input-container>
   <clr-input-container>
     <label for="commit_id" class="clr-required-mark">Branch / Commit ID</label>
     <input type="text" id="commit_id" name="commit_id" [(ngModel)]="model.commit_id" clrInput required
-      placeholder="e.g., a1b2c3d4e5f6">
+      pattern="^(?!.*\.\.)(?!\/|.*\/$)(?!.*@\{)[^ ~^:?*\[\\]+(?<!\.)$"
+      placeholder="e.g., main, v1.0.0, or a1b2c3d">
+    <clr-control-helper>Must be a valid commit id or branch name.</clr-control-helper>
+    <clr-control-error>Invalid format. Cannot contain spaces, .., ~, ^, :, etc.</clr-control-error>
   </clr-input-container>
   <clr-input-container>
     <label for="project_name">Project Name (Optional)</label>
-    <input type="text" id="project_name" name="project_name" [(ngModel)]="model.project_name" clrInput
-      placeholder="Custom name for OpenGrok project">
+    <input type="text" id="project_name" name="project_name" [(ngModel)]="model.project_name" clrInput 
+      pattern="^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" 
+      placeholder="Custom name for OpenGrok project" />
+    <clr-control-helper>Must be lowercase alphanumeric with hyphens.</clr-control-helper>
+    <clr-control-error>Invalid format. Use lowercase letters, numbers, and hyphens.</clr-control-error>
   </clr-input-container>
   <clr-input-container>
     <label for="retention_days">Retention Period (days)</label>
@@ -42,9 +60,4 @@
     <input type="time" id="auto_sync_schedule" name="auto_sync_schedule" [(ngModel)]="model.auto_sync_schedule"
       clrInput [disabled]="!model.auto_sync_enabled" required />
   </clr-input-container>
-
-  <div class="modal-footer">
-    <button type="button" class="btn btn-outline" (click)="onCancel()">Cancel</button>
-    <button type="submit" class="btn btn-primary" [disabled]="!repoForm.form.valid">Add</button>
-  </div>
 </form>

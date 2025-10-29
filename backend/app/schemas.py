@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field, validator
 class RepositoryRequest(BaseModel):
     repo_url: str
     commit_id: str
-    project_name: Optional[str] = None
+    project_name: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Optional custom project name. Must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.",
+    )
     clone_single_branch: bool = False
     clone_recursive: bool = False
     # 0 means indefinite.
@@ -29,6 +33,22 @@ class RepositoryRequest(BaseModel):
             raise ValueError('auto_sync_schedule is required when auto_sync_enabled is true')
         if not values.get('auto_sync_enabled'):
             return None # If disabled, always set schedule to None, ignoring any passed value.
+        return v
+
+    @validator('commit_id')
+    def validate_commit_id(cls, v):
+        if not v:
+            raise ValueError('commit_id cannot be empty')
+        # Rules based on git-check-ref-format
+        # 1. It must not contain spaces or invalid characters.
+        if any(char in v for char in ' ~^:?*[\\]'):
+            raise ValueError('cannot contain spaces or special characters: ~^:?*[]\\')
+        # 2. It must not contain ".."
+        if '..' in v:
+            raise ValueError('cannot contain ".."')
+        # 3. It must not start or end with a "/"
+        if v.startswith('/') or v.endswith('/'):
+            raise ValueError('cannot start or end with "/"')
         return v
 
 
