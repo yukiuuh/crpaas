@@ -4,6 +4,8 @@ import time
 import logging
 
 from kubernetes import client, config
+from kubernetes.client.rest import ApiException
+from kubernetes.stream import stream
 
 from .config import (
     GIT_CLONER_BACKOFF_LIMIT,
@@ -234,3 +236,87 @@ def create_cleanup_job_manifest(job_name: str, pvc_path: str) -> client.V1Job:
         spec=spec
     )
     return job
+
+
+# --- OpenGrok Monitoring ---
+
+def get_opengrok_pods() -> list[client.V1Pod]:
+    """
+    Finds and returns a list of running OpenGrok pods using their component label.
+    Returns an empty list if no pods are found.
+    """
+    try:
+        pod_list = core_v1_api.list_namespaced_pod(
+            namespace=POD_NAMESPACE,
+            label_selector="app.kubernetes.io/component=opengrok",
+            field_selector="status.phase=Running" # Only get running pods
+        )
+        if not pod_list.items:
+            logger.warning("No running OpenGrok pod found.")
+            return []
+        return pod_list.items
+    except ApiException as e:
+        logger.error(f"K8s API error when searching for OpenGrok pod: {e}")
+        return []
+
+def get_pod_logs(pod_name: str, tail_lines: int = 200) -> str:
+    """
+    Retrieves the last N lines of logs from a specified pod.
+    """
+    try:
+        return core_v1_api.read_namespaced_pod_log(
+            name=pod_name,
+            namespace=POD_NAMESPACE,
+            tail_lines=tail_lines
+        )
+    except ApiException as e:
+        logger.error(f"K8s API error when fetching logs for pod {pod_name}: {e}")
+        return f"Error fetching logs from Kubernetes: {e.reason}"
+
+def get_storage_usage(pod_name: str) -> list[dict]:
+    """
+    Executes 'df -Pk' inside the OpenGrok pod and parses the output.
+    The -P flag ensures POSIX-compliant output on a single line per filesystem.
+    Returns a list of dictionaries, with sizes in kilobytes.
+    """
+    exec_command = ['/bin/sh', '-c', "df -Pk /opengrok/src /opengrok/data"]
+    try:
+        resp = stream(
+            core_v1_api.connect_get_namespaced_pod_exec,
+            pod_name, POD_NAMESPACE,
+            command=exec_command,
+            stderr=True, stdin=False, stdout=True, tty=False
+        )
+        
+        lines = resp.strip().split('\n')
+        parsed_data = []
+
+        for line in lines:
+            line = line.strip()
+            # Skip header or empty lines
+            if not line or line.startswith('Filesystem'):
+                continue
+
+            parts = re.split(r'\s+', line)
+            if len(parts) < 6:
+                continue
+            
+            # Check if the second column is a digit, indicating a data line
+            if not parts[1].isdigit():
+                continue
+
+            parsed_data.append({
+                "filesystem": parts[0],
+                "size_kb": int(parts[1]),
+                "used_kb": int(parts[2]),
+                "available_kb": int(parts[3]),
+                "use_percent": parts[4],
+                "mountpoint": parts[5],
+            })
+        return parsed_data
+    except ApiException as e:
+        logger.error(f"K8s API error when executing command in pod {pod_name}: {e}")
+        return []
+    except (ValueError, IndexError) as e:
+        logger.error(f"Failed to parse 'df -Pk' output: '{resp}'. Error: {e}")
+        return []

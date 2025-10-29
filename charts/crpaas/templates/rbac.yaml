@@ -19,8 +19,8 @@ rules:
     resources: ["jobs", "jobs/status"]
     verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: [""]
-    resources: ["pods", "pods/log"] # To check Job logs and Pod status
-    verbs: ["get", "list"]
+    resources: ["pods", "pods/log", "pods/exec"]
+    verbs: ["get", "list", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

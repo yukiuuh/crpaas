@@ -4,17 +4,21 @@ import { BrowserAnimationsModule } from "@angular/platform-browser/animations";
 import { ClarityModule } from "@clr/angular";
 import { HttpClientModule } from "@angular/common/http";
 import { FormsModule } from '@angular/forms';
+import { CommonModule } from '@angular/common';
 
 import { AppRoutingModule } from './app-routing.module';
 import { AppComponent } from './app.component';
 import { RepositoryListComponent } from './repository-list/repository-list.component';
 import { RepositoryAddFormComponent } from './repository-add-form/repository-add-form.component';
+import { OpengrokStatusComponent } from './opengrok-status/opengrok-status.component';
+import { BytesPipe } from './bytes.pipe';
 
 @NgModule({
   declarations: [
     AppComponent,
     RepositoryListComponent,
-    RepositoryAddFormComponent
+    RepositoryAddFormComponent,
+    OpengrokStatusComponent
   ],
   imports: [
     BrowserModule,
@@ -22,7 +26,9 @@ import { RepositoryAddFormComponent } from './repository-add-form/repository-add
     ClarityModule,
     AppRoutingModule,
     HttpClientModule,
-    FormsModule
+    FormsModule,
+    CommonModule,
+    BytesPipe
   ],
   providers: [],
   bootstrap: [AppComponent]

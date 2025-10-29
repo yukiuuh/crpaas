@@ -1,0 +1,72 @@
+<div class="container mt-3">
+  <div *ngIf="status$ | async as statuses">
+    <div *ngIf="statuses.length > 0; else noPods">
+      <div *ngFor="let status of statuses" class="card mb-4">
+        <div class="card-header">
+          <strong>Pod:</strong> {{ status.pod_name }}
+        </div>
+        <div class="card-body">
+          <div class="card-text">
+            <p><strong>Status:</strong> <span class="label"
+                [ngClass]="{'label-success': status.pod_status === 'Running', 'label-warning': status.pod_status === 'Pending', 'label-danger': status.pod_status !== 'Running' && status.pod_status !== 'Pending'}">
+                {{ status.pod_status }}
+              </span></p>
+            <p><strong>Pod IP:</strong> {{ status.pod_ip }}</p>
+            <p><strong>Node:</strong> {{ status.node_name }}</p>
+          </div>
+
+          <h5 class="mt-4">Storage Usage</h5>
+          <div class="table-responsive">
+            <table class="table table-striped table-bordered table-sm">
+              <thead class="thead-light">
+                <tr>
+                  <th>Mountpoint</th>
+                  <th>Use%</th>
+                  <th>Used / Size</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let usage of status.storage_usage">
+                  <td>{{ usage.mountpoint }}</td>
+                  <td>
+                    <clr-progress-bar [clrValue]="getUsePercentValue(usage.use_percent)"
+                      clrColor="{'danger': getUsePercentValue(usage.use_percent) > 90, 'warning': getUsePercentValue(usage.use_percent) > 75, 'success': getUsePercentValue(usage.use_percent) <= 75}"
+                      clrLabeled>
+                    </clr-progress-bar>
+                  </td>
+                  <td>{{ usage.used_kb | bytes }} /{{ usage.size_kb | bytes }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card-footer">
+          <button class="btn btn-sm btn-outline-primary" (click)="showOpenGrokLogs(status.pod_name)">Show Logs</button>
+        </div>
+      </div>
+    </div>
+    <ng-template #noPods>
+      <p>No running OpenGrok pods found.</p>
+    </ng-template>
+  </div>
+
+  <div *ngIf="!(status$ | async)">
+    <p>Loading OpenGrok status...</p>
+  </div>
+</div>
+
+<!-- Log Modal -->
+<clr-modal [(clrModalOpen)]="logModalOpen" [clrModalSize]="'lg'">
+  <h3 class="modal-title">Logs for {{ selectedPodName }}</h3>
+  <div class="modal-body">
+    <ng-container *ngIf="selectedPodLogs$ | async as logs; else loadingLogs">
+      <pre class="log-container"><code>{{ logs.logs }}</code></pre>
+    </ng-container>
+    <ng-template #loadingLogs>
+      <p>Loading logs...</p>
+    </ng-template>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-outline" (click)="logModalOpen = false">Close</button>
+  </div>
+</clr-modal>

@@ -12,7 +12,7 @@ from kubernetes.client.rest import ApiException
 from . import k8s
 from .config import POD_NAMESPACE, OPEN_GROK_BASE_URL, DB_PATH
 from .database import get_db_session, custom_connection_factory
-from .schemas import RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, AppConfig, RepositoryAutoSyncUpdateRequest
+from .schemas import RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, AppConfig, RepositoryAutoSyncUpdateRequest, OpenGrokPodStatus
 
 logger = logging.getLogger(f"uvicorn.{__name__}")
 router = APIRouter()
@@ -409,3 +409,43 @@ async def cleanup_expired_repositories():
     finally:
         if db:
             await db.close()
+
+
+@router.get("/opengrok/status", response_model=list[OpenGrokPodStatus])
+async def get_opengrok_status():
+    """
+    Retrieves the status and storage usage of all running OpenGrok pods.
+    """
+    opengrok_pods = k8s.get_opengrok_pods()
+
+    if not opengrok_pods:
+        return []
+
+    statuses = []
+    for pod in opengrok_pods:
+        pod_name = pod.metadata.name
+        storage_list_of_dicts = k8s.get_storage_usage(pod_name)
+        
+        status = OpenGrokPodStatus(
+            pod_name=pod_name,
+            pod_status=pod.status.phase,
+            pod_ip=pod.status.pod_ip,
+            node_name=pod.spec.node_name,
+            storage_usage=storage_list_of_dicts,
+        )
+        statuses.append(status)
+    
+    return statuses
+
+
+@router.get("/opengrok/logs", response_model=JobLogs)
+async def get_opengrok_logs(pod_name: str, tail_lines: int = 500):
+    """
+    Retrieves the logs for a specific OpenGrok pod.
+    """
+    # The pod_name is now a required query parameter, so we don't need to find the pod first.
+    # We directly request the logs for the given pod name.
+    # tail_lines can be adjusted via query parameter.
+    logs = k8s.get_pod_logs(pod_name, tail_lines=tail_lines)
+    
+    return JobLogs(logs=logs)

@@ -75,3 +75,20 @@ class RepositoryInfo(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class StorageUsageInfo(BaseModel):
+    filesystem: str
+    size_kb: int
+    used_kb: int
+    available_kb: int
+    use_percent: str
+    mountpoint: str
+
+
+class OpenGrokPodStatus(BaseModel):
+    pod_name: str
+    pod_status: str
+    pod_ip: Optional[str] = None
+    node_name: Optional[str] = None
+    storage_usage: list[StorageUsageInfo]
