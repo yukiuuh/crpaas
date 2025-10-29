@@ -68,6 +68,10 @@
             <cds-icon shape="exclamation-triangle"></cds-icon>
             {{ repo.status }}
           </span>
+          <span *ngSwitchCase="'DELETING'" class="label label-danger">
+            <cds-icon shape="trash"></cds-icon>
+            {{ repo.status }}
+          </span>
           <span *ngSwitchDefault class="label clickable" (click)="openLogsModal(repo)">{{ repo.status }}</span>
         </div>
       </clr-dg-cell>

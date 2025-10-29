@@ -2,17 +2,18 @@ import logging
 import re
 import sqlite3
 import time
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 from . import k8s
 from .config import POD_NAMESPACE, OPEN_GROK_BASE_URL, DB_PATH
-from .database import get_db_session
+from .database import get_db_session, custom_connection_factory
 from .schemas import RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, AppConfig, RepositoryAutoSyncUpdateRequest, OpenGrokPodStatus, OpenGrokDeploymentStatus, OpenGrokStatusResponse
 
 logger = logging.getLogger(f"uvicorn.{__name__}")
@@ -207,17 +208,17 @@ async def sync_repository(
     return RepositoryInfo(**updated_record)
 
 
-async def _trigger_repository_deletion(record_id: int, db: aiosqlite.Connection):
+async def _trigger_repository_deletion(record_id: int):
     """
-    Core logic to delete a repository's resources. Can be called from an API endpoint or a background task.
+    Core logic to delete a repository's resources. This function now runs in the background and manages its own DB connection.
     """
-    logger.info(f"Initiating deletion for repository ID: {record_id}")
-    
-    # Include a timestamp in the cleanup job name to ensure uniqueness
-    cleanup_job_name = f"cleanup-{record_id}-{int(time.time())}"
-
+    logger.info(f"Initiating background deletion for repository ID: {record_id}")
+    db = None
     try:
-        # 1. Fetch the record to be deleted (job_name and pvc_path are needed)
+        # 1. Connect to the database
+        db = await aiosqlite.connect(DB_PATH, factory=custom_connection_factory)
+
+        # 2. Fetch the record to be deleted
         async with db.execute("SELECT job_name, pvc_path FROM repositories WHERE id = ?", (record_id,)) as cursor:
             record = await cursor.fetchone()
 
@@ -225,39 +226,61 @@ async def _trigger_repository_deletion(record_id: int, db: aiosqlite.Connection)
             logger.warning(f"Deletion skipped: Repository with ID {record_id} not found in DB (already deleted?).")
             return
 
-        # 2. Delete the DB record immediately
+        pvc_path = record['pvc_path']
+        original_job_name = record['job_name']
+        
+        # 3. Create a unique Cleanup Job to delete the source code directory
+        cleanup_job_name = f"cleanup-{pvc_path}-{int(time.time())}"
+        cleanup_manifest = k8s.create_cleanup_job_manifest(cleanup_job_name, pvc_path)
+        
+        k8s.batch_v1_api.create_namespaced_job(body=cleanup_manifest, namespace=POD_NAMESPACE)
+        logger.info(f"Cleanup Job created: {cleanup_job_name} for pvc_path: {pvc_path}")
+
+        # 4. Wait for the Cleanup Job to complete
+        job_succeeded = False
+        for _ in range(60):  # Poll for 5 minutes (60 * 5 seconds)
+            try:
+                job_status = k8s.batch_v1_api.read_namespaced_job_status(name=cleanup_job_name, namespace=POD_NAMESPACE)
+                if job_status.status.succeeded and job_status.status.succeeded > 0:
+                    logger.info(f"Cleanup Job {cleanup_job_name} succeeded.")
+                    job_succeeded = True
+                    break
+                elif job_status.status.failed and job_status.status.failed > 0:
+                    logger.error(f"Cleanup Job {cleanup_job_name} failed.")
+                    break
+            except ApiException as e:
+                if e.status == 404:
+                    logger.warning(f"Cleanup Job {cleanup_job_name} not found, assuming it's still being created.")
+                else:
+                    raise
+            await asyncio.sleep(5)
+        
+        if not job_succeeded:
+            logger.error(f"Cleanup Job {cleanup_job_name} did not succeed. Manual cleanup may be required for pvc_path: {pvc_path}")
+            return
+
+        # 5. Delete the DB record ONLY after the cleanup job has succeeded
         await db.execute("DELETE FROM repositories WHERE id = ?", (record_id,))
         await db.commit()
-        logger.info(f"DB record deleted for ID: {record_id}")
+        logger.info(f"DB record deleted for ID: {record_id} after successful cleanup.")
 
-        # 3. Delete the Git Cloner Job from K8s
+        # 6. Delete the original Git Cloner Job from K8s
         try:
             k8s.batch_v1_api.delete_namespaced_job(
-                name=record['job_name'],
+                name=original_job_name,
                 namespace=POD_NAMESPACE,
-                # Setting to delete the Job's Pods as well
                 body=client.V1DeleteOptions(propagation_policy='Foreground')
             )
-            logger.info(f"Original Job deleted: {record['job_name']}")
+            logger.info(f"Original Job deleted: {original_job_name}")
         except ApiException as e:
-            if e.status != 404: # Ignore 404 (Not Found) errors
-                logger.warning(f"Failed to delete original Job {record['job_name']}: {e}")
+            if e.status != 404:
+                logger.warning(f"Failed to delete original Job {original_job_name}: {e}")
 
-        # 4. Create a Cleanup Job to delete the source code directory
-        cleanup_manifest = k8s.create_cleanup_job_manifest(cleanup_job_name, record['pvc_path'])
-        
-        k8s.batch_v1_api.create_namespaced_job(
-            body=cleanup_manifest,
-            namespace=POD_NAMESPACE
-        )
-        logger.info(f"Cleanup Job created: {cleanup_job_name} for pvc_path: {record['pvc_path']}")
-
-    except ApiException as e:
-        logger.error(f"K8s API error during deletion for ID {record_id}: {e}")
-        # In a background task, we log the error and continue.
-        # Re-raising might stop the cleanup scheduler depending on error handling.
     except Exception as e:
-        logger.error(f"Unexpected error during deletion for ID {record_id}: {e}")
+        logger.error(f"Unexpected error during background deletion for ID {record_id}: {e}")
+    finally:
+        if db:
+            await db.close()
 
 
 @router.put("/repository/{record_id}/expiration", response_model=RepositoryInfo)
@@ -338,20 +361,23 @@ async def update_repository_auto_sync(
 @router.delete("/repository/{record_id}", status_code=202)
 async def delete_repository(
     record_id: int, 
+    background_tasks: BackgroundTasks,
     db: aiosqlite.Connection = Depends(get_db_session)
 ):
     """
-    Initiates the deletion of a repository's resources via an API call.
+    Initiates the deletion of a repository's resources in the background.
     """
-    # We still check for the record existence to provide immediate feedback to the user.
+    # 1. Check for the record existence to provide immediate feedback to the user.
     async with db.execute("SELECT id FROM repositories WHERE id = ?", (record_id,)) as cursor:
         if not await cursor.fetchone():
             raise HTTPException(status_code=404, detail=f"Repository with ID {record_id} not found.")
 
-    # The actual deletion is heavy, so we can run it in the background.
-    # For simplicity here, we run it directly.
-    # For a more robust system, you could add this to a proper background task queue.
-    await _trigger_repository_deletion(record_id, db)
+    # 2. Immediately update the status to 'DELETING'
+    await db.execute("UPDATE repositories SET status = 'DELETING' WHERE id = ?", (record_id,))
+    await db.commit()
+
+    # 3. Add the heavy deletion logic to a background task
+    background_tasks.add_task(_trigger_repository_deletion, record_id)
 
     return {"message": f"Deletion initiated for repository ID {record_id}."}
 
@@ -429,7 +455,9 @@ async def cleanup_expired_repositories():
 
         logger.info(f"Found {len(expired_repos)} expired repositories to delete.")
         for repo in expired_repos:
-            await _trigger_repository_deletion(repo['id'], db)
+            # Since _trigger_repository_deletion now handles its own DB connection,
+            # we don't need to pass `db` anymore.
+            await _trigger_repository_deletion(repo['id'])
     finally:
         if db:
             await db.close()

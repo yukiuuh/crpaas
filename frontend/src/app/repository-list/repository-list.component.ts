@@ -128,6 +128,7 @@ export class RepositoryListComponent implements OnInit, OnDestroy {
     if (this.selected && this.selected.length > 0) {
       this.repositoryService.deleteRepositories(this.selected).subscribe(() => {
         this.refreshList(); // Trigger an immediate refresh
+        this.showToast(`Deletion initiated for ${this.selected.length} repositories.`, 'success');
         this.selected = []; // Clear selection
         this.isDeleteModalOpen = false; // Close modal
       });
