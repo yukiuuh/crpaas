@@ -1,7 +1,20 @@
 from datetime import datetime
 from typing import Optional
+from enum import Enum
 
 from pydantic import BaseModel, Field, validator
+
+
+class RepositoryStatus(str, Enum):
+    """Enumeration for repository processing statuses."""
+    PENDING = "PENDING"
+    POD_CREATING = "POD_CREATING"
+    CLONING = "CLONING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    DELETING = "DELETING"
+    DELETION_FAILED = "DELETION_FAILED"
+    UNKNOWN_CLEANUP = "UNKNOWN_CLEANUP"
 
 
 class RepositoryRequest(BaseModel):
@@ -81,7 +94,7 @@ class RepositoryInfo(BaseModel):
     id: int
     repo_url: str
     commit_id: str
-    status: str
+    status: RepositoryStatus
     job_name: str
     pvc_path: str
     created_at: datetime

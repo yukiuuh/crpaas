@@ -1,8 +1,18 @@
+export type RepositoryStatus =
+  | 'PENDING'
+  | 'POD_CREATING'
+  | 'CLONING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'DELETING'
+  | 'DELETION_FAILED'
+  | 'UNKNOWN_CLEANUP';
+
 export interface Repository {
   id: number;
   repo_url: string;
   commit_id: string;
-  status: string;
+  status: RepositoryStatus;
   pvc_path: string;
   job_name: string;
   created_at: string;

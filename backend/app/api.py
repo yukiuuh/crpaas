@@ -14,7 +14,11 @@ from kubernetes.client.rest import ApiException
 from . import k8s
 from .config import POD_NAMESPACE, OPEN_GROK_BASE_URL, DB_PATH
 from .database import get_db_session, custom_connection_factory
-from .schemas import RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, AppConfig, RepositoryAutoSyncUpdateRequest, OpenGrokPodStatus, OpenGrokDeploymentStatus, OpenGrokStatusResponse
+from .schemas import (
+    RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, 
+    AppConfig, RepositoryAutoSyncUpdateRequest, OpenGrokPodStatus, 
+    OpenGrokDeploymentStatus, OpenGrokStatusResponse, RepositoryStatus
+)
 
 logger = logging.getLogger(f"uvicorn.{__name__}")
 router = APIRouter()
@@ -124,7 +128,7 @@ async def request_repository(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                req.repo_url, req.commit_id, 'PENDING', job_name, pvc_path, 
+                req.repo_url, req.commit_id, RepositoryStatus.PENDING.value, job_name, pvc_path, 
                 expired_at, req.clone_single_branch, req.clone_recursive, 
                 datetime.now(timezone.utc),
                 req.auto_sync_enabled,
@@ -196,9 +200,9 @@ async def sync_repository(
 
     # 5. Update the database record with the new job name and PENDING status
     await db.execute(
-        "UPDATE repositories SET status = 'PENDING', job_name = ?, last_synced_at = ? WHERE id = ?",
+        "UPDATE repositories SET status = ?, job_name = ?, last_synced_at = ? WHERE id = ?",
         # Set last_synced_at to the current time when sync is triggered
-        (new_job_name, datetime.now(timezone.utc), record_id)
+        (RepositoryStatus.PENDING.value, new_job_name, datetime.now(timezone.utc), record_id)
     )
     await db.commit()
 
@@ -235,46 +239,6 @@ async def _trigger_repository_deletion(record_id: int):
         
         k8s.batch_v1_api.create_namespaced_job(body=cleanup_manifest, namespace=POD_NAMESPACE)
         logger.info(f"Cleanup Job created: {cleanup_job_name} for pvc_path: {pvc_path}")
-
-        # 4. Wait for the Cleanup Job to complete
-        job_succeeded = False
-        for _ in range(60):  # Poll for 5 minutes (60 * 5 seconds)
-            try:
-                job_status = k8s.batch_v1_api.read_namespaced_job_status(name=cleanup_job_name, namespace=POD_NAMESPACE)
-                if job_status.status.succeeded and job_status.status.succeeded > 0:
-                    logger.info(f"Cleanup Job {cleanup_job_name} succeeded.")
-                    job_succeeded = True
-                    break
-                elif job_status.status.failed and job_status.status.failed > 0:
-                    logger.error(f"Cleanup Job {cleanup_job_name} failed.")
-                    break
-            except ApiException as e:
-                if e.status == 404:
-                    logger.warning(f"Cleanup Job {cleanup_job_name} not found, assuming it's still being created.")
-                else:
-                    raise
-            await asyncio.sleep(5)
-        
-        if not job_succeeded:
-            logger.error(f"Cleanup Job {cleanup_job_name} did not succeed. Manual cleanup may be required for pvc_path: {pvc_path}")
-            return
-
-        # 5. Delete the DB record ONLY after the cleanup job has succeeded
-        await db.execute("DELETE FROM repositories WHERE id = ?", (record_id,))
-        await db.commit()
-        logger.info(f"DB record deleted for ID: {record_id} after successful cleanup.")
-
-        # 6. Delete the original Git Cloner Job from K8s
-        try:
-            k8s.batch_v1_api.delete_namespaced_job(
-                name=original_job_name,
-                namespace=POD_NAMESPACE,
-                body=client.V1DeleteOptions(propagation_policy='Foreground')
-            )
-            logger.info(f"Original Job deleted: {original_job_name}")
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning(f"Failed to delete original Job {original_job_name}: {e}")
 
     except Exception as e:
         logger.error(f"Unexpected error during background deletion for ID {record_id}: {e}")
@@ -373,7 +337,10 @@ async def delete_repository(
             raise HTTPException(status_code=404, detail=f"Repository with ID {record_id} not found.")
 
     # 2. Immediately update the status to 'DELETING'
-    await db.execute("UPDATE repositories SET status = 'DELETING' WHERE id = ?", (record_id,))
+    await db.execute(
+        "UPDATE repositories SET status = ? WHERE id = ?", 
+        (RepositoryStatus.DELETING.value, record_id)
+    )
     await db.commit()
 
     # 3. Add the heavy deletion logic to a background task
@@ -387,11 +354,31 @@ async def list_repositories(
     db: aiosqlite.Connection = Depends(get_db_session)
 ):
     """
-    Returns a list of all managed (requested) code repositories.
+    Returns a list of all managed (requested) code repositories with dynamically updated statuses.
     """
     async with db.execute("SELECT * FROM repositories ORDER BY created_at DESC") as cursor:
         rows = await cursor.fetchall()
-    return [RepositoryInfo(**row) for row in rows]
+    
+    repos = [RepositoryInfo(**row) for row in rows]
+
+    # Create a list of tasks to run concurrently
+    tasks = []
+    for repo in repos:
+        # For pending jobs, dynamically query the real-time status from Kubernetes
+        if repo.status == RepositoryStatus.PENDING:
+            tasks.append(update_repo_status(repo))
+
+    # Run status update tasks in parallel
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    return repos
+
+
+async def update_repo_status(repo: RepositoryInfo):
+    """Helper function to update a single repository's status in-place."""
+    # This function will modify the repo object directly
+    repo.status = k8s.get_job_pod_status(repo.job_name)
 
 @router.get("/repository/{record_id}/logs", response_model=JobLogs)
 async def get_repository_logs(
@@ -399,30 +386,46 @@ async def get_repository_logs(
     db: aiosqlite.Connection = Depends(get_db_session)
 ):
     """
-    Retrieves the logs for the pod associated with a repository's job.
+    Retrieves logs for the pod associated with a repository's job.
+    - For standard statuses, it fetches logs from the clone/sync job.
+    - For 'DELETING' or 'DELETION_FAILED' statuses, it fetches logs from the cleanup job.
     """
-    # 1. Get job_name from DB
-    async with db.execute("SELECT job_name FROM repositories WHERE id = ?", (record_id,)) as cursor:
+    # 1. Get repository info from DB
+    async with db.execute("SELECT job_name, pvc_path, status FROM repositories WHERE id = ?", (record_id,)) as cursor:
         record = await cursor.fetchone()
     if not record:
         raise HTTPException(status_code=404, detail=f"Repository with ID {record_id} not found.")
 
+    repo_status = record['status']
     job_name = record['job_name']
+    pvc_path = record['pvc_path']
+    
+    pod_label_selector = ""
+    not_found_message = ""
+
+    # 2. Determine which logs to fetch based on the repository status
+    if repo_status in [RepositoryStatus.DELETING.value, RepositoryStatus.DELETION_FAILED.value]:
+        pod_label_selector = f"app=crpaas-git-cleaner,pvc-path={pvc_path}"
+        not_found_message = f"No cleanup pod found for project '{pvc_path}'."
+    else:
+        pod_label_selector = f"job-name={job_name}"
+        not_found_message = f"No pod found for job '{job_name}'."
 
     try:
-        # 2. Find the pod for the job using a label selector
+        # 3. Find the relevant pod using the determined label selector
         pod_list = k8s.core_v1_api.list_namespaced_pod(
             namespace=POD_NAMESPACE,
-            label_selector=f"job-name={job_name}"
+            label_selector=pod_label_selector
         )
 
         if not pod_list.items:
-            # This can happen if the pod is already cleaned up or hasn't been created yet.
-            return {"logs": f"No pod found for job '{job_name}'. The pod may have been cleaned up or is still pending creation."}
+            return {"logs": f"{not_found_message} The pod may have been cleaned up or is still pending creation."}
 
-        pod_name = pod_list.items[0].metadata.name
+        # Get the most recent pod if there are multiple from retries
+        pod = sorted(pod_list.items, key=lambda p: p.metadata.creation_timestamp, reverse=True)[0]
+        pod_name = pod.metadata.name
 
-        # 3. Get logs from the pod
+        # 4. Get logs from the pod
         logs = k8s.core_v1_api.read_namespaced_pod_log(
             name=pod_name,
             namespace=POD_NAMESPACE
@@ -430,9 +433,8 @@ async def get_repository_logs(
         return {"logs": logs}
 
     except ApiException as e:
-        logger.error(f"K8s API error when fetching logs for job {job_name}: {e}")
+        logger.error(f"K8s API error when fetching logs for repo {record_id} (selector: {pod_label_selector}): {e}")
         return {"logs": f"Error fetching logs from Kubernetes: {e.reason}"}
-
 
 async def cleanup_expired_repositories():
     """

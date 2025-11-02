@@ -7,6 +7,7 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream
 
+from .schemas import RepositoryStatus
 from .config import (
     GIT_CLONER_BACKOFF_LIMIT,
     GIT_CLONER_SCRIPT_CONFIGMAP_NAME,
@@ -218,7 +219,7 @@ def create_cleanup_job_manifest(job_name: str, pvc_path: str) -> client.V1Job:
     )
 
     template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels={"app": "crpaas-git-cleaner"}),
+        metadata=client.V1ObjectMeta(labels={"app": "crpaas-git-cleaner", "pvc-path": pvc_path}),
         spec=client.V1PodSpec(
             restart_policy="Never",
             containers=[container],
@@ -228,16 +229,64 @@ def create_cleanup_job_manifest(job_name: str, pvc_path: str) -> client.V1Job:
 
     spec = client.V1JobSpec(
         template=template,
-        ttl_seconds_after_finished=300 # Automatically delete the Job object after 5 minutes
+        backoff_limit=0,  # Do not retry cleanup
+        ttl_seconds_after_finished=3600  # Automatically delete the Job object after 1 hour
     )
 
     job = client.V1Job(
         api_version="batch/v1",
         kind="Job",
-        metadata=client.V1ObjectMeta(name=job_name, namespace=POD_NAMESPACE),
+        metadata=client.V1ObjectMeta(
+            name=job_name, 
+            namespace=POD_NAMESPACE,
+            labels={"app": "crpaas-git-cleaner", "pvc-path": pvc_path}
+        ),
         spec=spec
     )
     return job
+
+
+def get_job_pod_status(job_name: str) -> RepositoryStatus:
+    """
+    Checks the status of the Pod associated with a given Job name and returns a detailed status.
+    """
+    try:
+        # 1. Find the pod for the job using a label selector
+        pod_list = core_v1_api.list_namespaced_pod(
+            namespace=POD_NAMESPACE,
+            label_selector=f"job-name={job_name}"
+        )
+
+        if not pod_list.items:
+            # If no pod is found, it's likely still being created by the job controller.
+            # We can treat this as the initial "PENDING" state before pod creation begins.
+            return RepositoryStatus.PENDING
+
+        # A job can have multiple pods if it retries. Get the most recent one.
+        pod = sorted(pod_list.items, key=lambda p: p.metadata.creation_timestamp, reverse=True)[0]
+        pod_phase = pod.status.phase
+
+        if pod_phase == "Pending":
+            return RepositoryStatus.POD_CREATING
+        elif pod_phase == "Running":
+            return RepositoryStatus.CLONING
+        elif pod_phase == "Succeeded":
+            # This is a final state, but the main job_watcher should handle the DB update.
+            # For a dynamic check, this indicates completion.
+            return RepositoryStatus.COMPLETED
+        elif pod_phase == "Failed":
+            return RepositoryStatus.FAILED
+        else:
+            # For any other unhandled phases, return the base PENDING status.
+            return RepositoryStatus.PENDING
+
+    except ApiException as e:
+        logger.error(f"K8s API error when fetching pod status for job {job_name}: {e}")
+        # If an error occurs (e.g., permissions), return PENDING to avoid breaking the UI.
+        return RepositoryStatus.PENDING
+    except Exception as e:
+        logger.error(f"Unexpected error in get_job_pod_status for job {job_name}: {e}")
+        return RepositoryStatus.PENDING
 
 
 # --- OpenGrok Monitoring ---

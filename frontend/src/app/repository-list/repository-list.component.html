@@ -52,25 +52,33 @@
       <clr-dg-cell><code>{{ repo.commit_id.substring(0, 12) }}</code></clr-dg-cell>
       <clr-dg-cell class="status-cell">
         <div [ngSwitch]="repo.status" class="status-cell">
-          <span *ngSwitchCase="'PENDING'" class="label clickable" (click)="openLogsModal(repo)">
+          <span *ngSwitchCase="'PENDING'" class="label">
             <cds-icon shape="hourglass" status="info"></cds-icon>
-            {{ repo.status }}
+            Pending
           </span>
-          <span *ngSwitchCase="'RUNNING'" class="label clickable" (click)="openLogsModal(repo)">
+          <span *ngSwitchCase="'POD_CREATING'" class="label">
+            <cds-icon shape="hourglass" status="info"></cds-icon>
+            Pod Creating
+          </span>
+          <span *ngSwitchCase="'CLONING'" class="label clickable" (click)="openLogsModal(repo)">
             <cds-icon shape="sync" status="info"></cds-icon>
-            {{ repo.status }}
+            Cloning
           </span>
           <span *ngSwitchCase="'COMPLETED'" class="label label-success">
             <cds-icon shape="check-circle"></cds-icon>
-            {{ repo.status }}
+            Ready
           </span>
           <span *ngSwitchCase="'FAILED'" class="label label-danger clickable" (click)="openLogsModal(repo)">
             <cds-icon shape="exclamation-triangle"></cds-icon>
-            {{ repo.status }}
+            Failed
           </span>
-          <span *ngSwitchCase="'DELETING'" class="label label-danger">
+          <span *ngSwitchCase="'DELETING'" class="label label-danger clickable" (click)="openLogsModal(repo)">
             <cds-icon shape="trash"></cds-icon>
-            {{ repo.status }}
+            Deleting
+          </span>
+          <span *ngSwitchCase="'DELETION_FAILED'" class="label label-danger clickable" (click)="openLogsModal(repo)">
+            <cds-icon shape="exclamation-triangle"></cds-icon>
+            Deletion Failed
           </span>
           <span *ngSwitchDefault class="label clickable" (click)="openLogsModal(repo)">{{ repo.status }}</span>
         </div>

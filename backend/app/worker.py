@@ -60,50 +60,18 @@ async def job_watcher_worker():
             # Create a dedicated connection for the worker each time
             db = await aiosqlite.connect(DB_PATH, factory=custom_connection_factory)
             
-            async with db.execute("SELECT job_name, repo_url, commit_id FROM repositories WHERE status = 'PENDING'") as cursor:
-                pending_jobs = await cursor.fetchall()
-            
-            if not pending_jobs:
-                logger.debug("No pending jobs found. Continuing watch.")
-                continue 
+            async with db.execute("SELECT id, job_name, status, pvc_path FROM repositories WHERE status IN ('PENDING', 'DELETING')") as cursor:
+                active_repos = await cursor.fetchall()
 
-            for job in pending_jobs:
-                job_name = job['job_name']
-                new_status = 'PENDING'
-                
-                try:
-                    k8s_job = batch_v1_api.read_namespaced_job_status(name=job_name, namespace=POD_NAMESPACE)
-                    
-                    if k8s_job.status.succeeded is not None and k8s_job.status.succeeded >= 1:
-                        new_status = 'COMPLETED'
-                        logger.info(f"Job COMPLETED: {job_name}")
+            if not active_repos:
+                logger.debug("No active jobs (PENDING or DELETING) found. Continuing watch.")
+                continue
 
-                        if new_status == 'COMPLETED':
-                            await trigger_opengrok_reindex(job_name)
-                        
-                    elif k8s_job.status.failed is not None and k8s_job.status.failed >= 1:
-                        new_status = 'FAILED'
-                        logger.warning(f"Job FAILED: {job_name}")
-                    
-                    if new_status in ['COMPLETED', 'FAILED']:
-                        await db.execute(
-                            "UPDATE repositories SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
-                            (new_status, job_name)
-                        )
-                        await db.commit()
-
-                except ApiException as e:
-                    if e.status == 404:
-                        logger.warning(f"Job {job_name} not found in K8s (404). Setting DB status to UNKNOWN_CLEANUP.")
-                        await db.execute(
-                            "UPDATE repositories SET status = 'UNKNOWN_CLEANUP', updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
-                            (job_name,)
-                        )
-                        await db.commit()
-                    else:
-                        logger.error(f"Error reading K8s Job {job_name}: {e}")
-                except Exception as e:
-                    logger.error(f"An unexpected error occurred during job check for {job_name}: {e}")
+            for repo in active_repos:
+                if repo['status'] == 'PENDING':
+                    await check_cloning_job_status(db, repo)
+                elif repo['status'] == 'DELETING':
+                    await check_cleanup_job_status(db, repo)
 
         except Exception as e:
             logger.error(f"Error during database operation in watcher: {e}")
@@ -114,6 +82,83 @@ async def job_watcher_worker():
                 await db.close()
                 
     logger.info("Kubernetes Job Watcher stopped.")
+
+
+async def check_cloning_job_status(db: aiosqlite.Connection, repo: aiosqlite.Row):
+    """Checks the status of a cloning job and updates the DB."""
+    job_name = repo['job_name']
+    new_status = None
+    try:
+        k8s_job = batch_v1_api.read_namespaced_job_status(name=job_name, namespace=POD_NAMESPACE)
+        
+        if k8s_job.status.succeeded is not None and k8s_job.status.succeeded >= 1:
+            new_status = 'COMPLETED'
+            logger.info(f"Job COMPLETED: {job_name}")
+            await trigger_opengrok_reindex(job_name)
+            
+        elif k8s_job.status.failed is not None and k8s_job.status.failed >= 1:
+            new_status = 'FAILED'
+            logger.warning(f"Job FAILED: {job_name}")
+        
+        if new_status:
+            await db.execute(
+                "UPDATE repositories SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
+                (new_status, job_name)
+            )
+            await db.commit()
+
+    except ApiException as e:
+        if e.status == 404:
+            logger.warning(f"Job {job_name} not found in K8s (404). Setting DB status to UNKNOWN_CLEANUP.")
+            await db.execute(
+                "UPDATE repositories SET status = 'UNKNOWN_CLEANUP', updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
+                (job_name,)
+            )
+            await db.commit()
+        else:
+            logger.error(f"Error reading K8s Job {job_name}: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during job check for {job_name}: {e}")
+
+
+async def check_cleanup_job_status(db: aiosqlite.Connection, repo: aiosqlite.Row):
+    """Checks the status of a cleanup job and updates the DB."""
+    repo_id = repo['id']
+    pvc_path = repo['pvc_path']
+    
+    try:
+        # Find the cleanup job by label selector
+        label_selector = f"app=crpaas-git-cleaner,pvc-path={pvc_path}"
+        job_list = batch_v1_api.list_namespaced_job(namespace=POD_NAMESPACE, label_selector=label_selector)
+
+        if not job_list.items:
+            logger.warning(f"No cleanup job found for pvc_path: {pvc_path}. Waiting for creation.")
+            return
+
+        # Get the most recent job if multiple exist
+        cleanup_job = sorted(job_list.items, key=lambda j: j.metadata.creation_timestamp, reverse=True)[0]
+        cleanup_job_name = cleanup_job.metadata.name
+
+        if cleanup_job.status.succeeded is not None and cleanup_job.status.succeeded >= 1:
+            logger.info(f"Cleanup job {cleanup_job_name} SUCCEEDED for repo ID {repo_id}.")
+            # On success, delete the repository record from the database
+            await db.execute("DELETE FROM repositories WHERE id = ?", (repo_id,))
+            await db.commit()
+            logger.info(f"Repository record for ID {repo_id} deleted.")
+
+        elif cleanup_job.status.failed is not None and cleanup_job.status.failed >= 1:
+            logger.error(f"Cleanup job {cleanup_job_name} FAILED for repo ID {repo_id}.")
+            # On failure, update the status to DELETION_FAILED
+            await db.execute(
+                "UPDATE repositories SET status = 'DELETION_FAILED', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (repo_id,)
+            )
+            await db.commit()
+
+    except ApiException as e:
+        logger.error(f"API error checking cleanup job for repo ID {repo_id}: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error in check_cleanup_job_status for repo ID {repo_id}: {e}")
 
 
 async def auto_sync_worker():
