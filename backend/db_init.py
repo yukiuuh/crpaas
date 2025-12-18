@@ -53,6 +53,9 @@ def initialize_db_sync():
             if 'auto_sync_schedule' not in columns:
                 cursor.execute("ALTER TABLE repositories ADD COLUMN auto_sync_schedule TEXT")
                 logger.info("Column 'auto_sync_schedule' added to repositories table.")
+            if 'task_log' not in columns:
+                cursor.execute("ALTER TABLE repositories ADD COLUMN task_log TEXT")
+                logger.info("Column 'task_log' added to repositories table.")
 
             conn.commit()
         logger.info("Database and table initialization/migration complete (Sync).")

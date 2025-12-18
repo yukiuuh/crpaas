@@ -105,6 +105,7 @@ class RepositoryInfo(BaseModel):
     clone_recursive: bool
     auto_sync_enabled: bool
     auto_sync_schedule: Optional[str] = None
+    task_log: Optional[str] = None
 
     class Config:
         orm_mode = True

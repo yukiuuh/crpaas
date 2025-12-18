@@ -40,9 +40,15 @@ spec:
           volumeMounts:
             - name: source-code
               mountPath: /opengrok/src
-              readOnly: true
+              readOnly: false
             - name: opengrok-data
               mountPath: /opengrok/data
+            - name: cloner-script
+              mountPath: /custom-scripts
+              readOnly: true
+            - name: ssh-volume
+              mountPath: /etc/git-secret
+              readOnly: true
       volumes:
         - name: source-code
           persistentVolumeClaim:
@@ -50,3 +56,23 @@ spec:
         - name: opengrok-data
           persistentVolumeClaim:
             claimName: {{ include "crpaas.fullname" . }}-opengrok-data
+        - name: cloner-script
+          configMap:
+            name: {{ include "crpaas.fullname" . }}-cloner-script
+            defaultMode: 0755
+        - name: ssh-volume
+          projected:
+            defaultMode: 0644
+            sources:
+              - secret:
+                  name: {{ .Values.crpaasManager.gitSsh.secretName }}
+                  items:
+                    - key: {{ .Values.crpaasManager.gitSsh.sshKeyFileKey }}
+                      path: id_rsa
+                      mode: 0400
+              - configMap:
+                  name: ssh-config-ssh-config
+                  items:
+                    - key: config
+                      path: config
+                      mode: 0400

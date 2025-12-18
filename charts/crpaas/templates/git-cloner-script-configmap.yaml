@@ -14,6 +14,8 @@ data:
     COMMIT_OR_BRANCH=$3
     CLONE_SINGLE_BRANCH=$4
     CLONE_RECURSIVE=$5
+    
+    export GIT_SSH_COMMAND="ssh -i /etc/git-secret/id_rsa -F /etc/git-secret/config"
 
     # Ensure the parent directory exists
     mkdir -p "$(dirname "$TARGET_DIR")"
@@ -21,15 +23,15 @@ data:
     if [ -d "$TARGET_DIR/.git" ]; then
       echo "Repository exists. Fetching updates..."
       cd "$TARGET_DIR"
-      git fetch origin --prune
+      git fetch origin --prune --progress
       # If submodules exist, update them
       if [ -f ".gitmodules" ] && [ "$CLONE_RECURSIVE" = "true" ]; then
         echo "Updating submodules..."
-        git submodule update --init --recursive
+        git submodule update --init --recursive --progress
       fi
     else
       echo "Repository does not exist. Cloning..."
-      CLONE_CMD="git clone"
+      CLONE_CMD="git clone --progress"
       if [ "$CLONE_SINGLE_BRANCH" = "true" ]; then
         CLONE_CMD="$CLONE_CMD --single-branch --branch $COMMIT_OR_BRANCH"
       fi

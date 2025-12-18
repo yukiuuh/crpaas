@@ -33,12 +33,6 @@ spec:
             # Pass necessary information for the manager app to dynamically create Jobs
             - name: SOURCE_CODE_PVC_NAME
               value: {{ include "crpaas.fullname" . }}-source-code
-            - name: GIT_CLONER_IMAGE
-              value: "{{ .Values.crpaasManager.gitCloner.image.repository }}:{{ .Values.crpaasManager.gitCloner.image.tag }}"
-            - name: GIT_CLONER_BACKOFF_LIMIT
-              value: {{ .Values.crpaasManager.gitCloner.backoffLimit | quote }}
-            - name: GIT_CLONER_SCRIPT_CONFIGMAP_NAME
-              value: {{ include "crpaas.fullname" . }}-cloner-script
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

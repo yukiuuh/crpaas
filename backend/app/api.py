@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 
-from . import k8s
+from . import k8s, worker
 from .config import POD_NAMESPACE, OPEN_GROK_BASE_URL, DB_PATH
 from .database import get_db_session, custom_connection_factory
 from .schemas import (
@@ -34,6 +34,7 @@ async def get_app_config():
 @router.post("/repository", status_code=202, response_model=RepositoryInfo)
 async def request_repository(
     req: RepositoryRequest, 
+    background_tasks: BackgroundTasks,
     db: aiosqlite.Connection = Depends(get_db_session) 
 ):
     """
@@ -97,26 +98,6 @@ async def request_repository(
                 detail=f"This repository and commit ID combination already exists under the project name '{existing['pvc_path']}'."
             )
 
-        # 2. Determine the Job name
-        job_name = k8s.create_job_name(req.repo_url, req.commit_id)
-
-        # 3. Generate the K8s Job manifest
-        job_manifest = k8s.create_job_manifest(job_name, req.repo_url, req.commit_id, pvc_path, req.clone_single_branch, req.clone_recursive)
-        
-        try:
-            # 4. Create the Job via the K8s API
-            k8s.batch_v1_api.create_namespaced_job(
-                body=job_manifest,
-                namespace=POD_NAMESPACE
-            )
-            logger.info(f"Created Job: {job_name}")
-        
-        except ApiException as e:
-            if e.status == 409: # If the Job already exists (idempotency)
-                 logger.warning(f"Job {job_name} already exists. Assuming pending.")
-            else:
-                logger.error(f"Exception when creating K8s Job: {e}\n")
-                raise HTTPException(status_code=500, detail=f"Failed to create Kubernetes Job: {e.body}")
 
         # 5. Save the request to the database
         async with db.execute(
@@ -128,7 +109,7 @@ async def request_repository(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                req.repo_url, req.commit_id, RepositoryStatus.PENDING.value, job_name, pvc_path, 
+                req.repo_url, req.commit_id, RepositoryStatus.PENDING.value, "EXEC", pvc_path, 
                 expired_at, req.clone_single_branch, req.clone_recursive, 
                 datetime.now(timezone.utc),
                 req.auto_sync_enabled,
@@ -137,6 +118,17 @@ async def request_repository(
         ) as cursor:
             await db.commit()
             record_id = cursor.lastrowid
+
+        # 6. Add background task to clone repository
+        background_tasks.add_task(
+            worker.perform_clone_task,
+            record_id=record_id,
+            repo_url=req.repo_url,
+            pvc_path=pvc_path,
+            commit_id=req.commit_id,
+            single_branch=req.clone_single_branch,
+            recursive=req.clone_recursive
+        )
         
         # Re-fetch the newly created record to get all fields, including timestamps
         async with db.execute("SELECT * FROM repositories WHERE id = ?", (record_id,)) as cursor:
@@ -181,30 +173,24 @@ async def sync_repository(
 
     repo_info = RepositoryInfo(**record)
 
-    # 2. Create a new, unique job name for the sync operation
-    new_job_name = k8s.create_job_name(repo_info.repo_url, repo_info.commit_id)
-
-    # 3. Generate the K8s Job manifest (this will use the clone-or-pull script)
-    job_manifest = k8s.create_job_manifest(new_job_name, repo_info.repo_url, repo_info.commit_id, repo_info.pvc_path, repo_info.clone_single_branch, repo_info.clone_recursive)
-
-    try:
-        # 4. Create the new Job via the K8s API
-        k8s.batch_v1_api.create_namespaced_job(
-            body=job_manifest,
-            namespace=POD_NAMESPACE
-        )
-        logger.info(f"Created sync Job: {new_job_name} for repository ID: {record_id}")
-    except ApiException as e:
-        logger.error(f"Exception when creating K8s sync Job: {e}\n")
-        raise HTTPException(status_code=500, detail=f"Failed to create Kubernetes Job for sync: {e.body}")
-
-    # 5. Update the database record with the new job name and PENDING status
+    # 2. Update the database record with PENDING status
     await db.execute(
-        "UPDATE repositories SET status = ?, job_name = ?, last_synced_at = ? WHERE id = ?",
-        # Set last_synced_at to the current time when sync is triggered
-        (RepositoryStatus.PENDING.value, new_job_name, datetime.now(timezone.utc), record_id)
+        "UPDATE repositories SET status = ?, job_name = 'SYNC', last_synced_at = ? WHERE id = ?",
+        (RepositoryStatus.PENDING.value, datetime.now(timezone.utc), record_id)
     )
     await db.commit()
+
+    # 3. Add background task to clone/sync repository
+    background_tasks.add_task(
+        worker.perform_clone_task,
+        record_id=record_id,
+        repo_url=repo_info.repo_url,
+        pvc_path=repo_info.pvc_path,
+        commit_id=repo_info.commit_id,
+        single_branch=repo_info.clone_single_branch,
+        recursive=repo_info.clone_recursive
+    )
+
 
     # 6. Fetch and return the updated record
     async with db.execute("SELECT * FROM repositories WHERE id = ?", (record_id,)) as cursor:
@@ -212,39 +198,7 @@ async def sync_repository(
     return RepositoryInfo(**updated_record)
 
 
-async def _trigger_repository_deletion(record_id: int):
-    """
-    Core logic to delete a repository's resources. This function now runs in the background and manages its own DB connection.
-    """
-    logger.info(f"Initiating background deletion for repository ID: {record_id}")
-    db = None
-    try:
-        # 1. Connect to the database
-        db = await aiosqlite.connect(DB_PATH, factory=custom_connection_factory)
-
-        # 2. Fetch the record to be deleted
-        async with db.execute("SELECT job_name, pvc_path FROM repositories WHERE id = ?", (record_id,)) as cursor:
-            record = await cursor.fetchone()
-
-        if not record:
-            logger.warning(f"Deletion skipped: Repository with ID {record_id} not found in DB (already deleted?).")
-            return
-
-        pvc_path = record['pvc_path']
-        original_job_name = record['job_name']
-        
-        # 3. Create a unique Cleanup Job to delete the source code directory
-        cleanup_job_name = f"cleanup-{pvc_path}-{int(time.time())}"
-        cleanup_manifest = k8s.create_cleanup_job_manifest(cleanup_job_name, pvc_path)
-        
-        k8s.batch_v1_api.create_namespaced_job(body=cleanup_manifest, namespace=POD_NAMESPACE)
-        logger.info(f"Cleanup Job created: {cleanup_job_name} for pvc_path: {pvc_path}")
-
-    except Exception as e:
-        logger.error(f"Unexpected error during background deletion for ID {record_id}: {e}")
-    finally:
-        if db:
-            await db.close()
+# Removed _trigger_repository_deletion as we use worker.perform_cleanup_task
 
 
 @router.put("/repository/{record_id}/expiration", response_model=RepositoryInfo)
@@ -344,7 +298,7 @@ async def delete_repository(
     await db.commit()
 
     # 3. Add the heavy deletion logic to a background task
-    background_tasks.add_task(_trigger_repository_deletion, record_id)
+    background_tasks.add_task(worker.perform_cleanup_task, record_id)
 
     return {"message": f"Deletion initiated for repository ID {record_id}."}
 
@@ -376,9 +330,12 @@ async def list_repositories(
 
 
 async def update_repo_status(repo: RepositoryInfo):
-    """Helper function to update a single repository's status in-place."""
-    # This function will modify the repo object directly
-    repo.status = k8s.get_job_pod_status(repo.job_name)
+    """
+    Helper function to update a single repository's status in-place.
+    Since we don't rely on Jobs anymore, this mainly handles logic if we wanted to
+    query active execs, but for now we rely on DB status being accurate.
+    """
+    pass
 
 @router.get("/repository/{record_id}/logs", response_model=JobLogs)
 async def get_repository_logs(
@@ -391,50 +348,30 @@ async def get_repository_logs(
     - For 'DELETING' or 'DELETION_FAILED' statuses, it fetches logs from the cleanup job.
     """
     # 1. Get repository info from DB
-    async with db.execute("SELECT job_name, pvc_path, status FROM repositories WHERE id = ?", (record_id,)) as cursor:
+    async with db.execute("SELECT job_name, pvc_path, status, task_log FROM repositories WHERE id = ?", (record_id,)) as cursor:
         record = await cursor.fetchone()
     if not record:
         raise HTTPException(status_code=404, detail=f"Repository with ID {record_id} not found.")
 
     repo_status = record['status']
-    job_name = record['job_name']
+    task_log = record['task_log']
+
     pvc_path = record['pvc_path']
+
+    # 2. Return stored logs if available
+    if task_log:
+        return {"logs": task_log}
     
-    pod_label_selector = ""
-    not_found_message = ""
+    # 3. If in progress, try to read the real-time log from the pod
+    if repo_status in [RepositoryStatus.PENDING.value, RepositoryStatus.CLONING.value, RepositoryStatus.POD_CREATING.value, RepositoryStatus.DELETING.value]:
+        log_file = f"/tmp/task-log-{pvc_path}.txt"
+        live_logs = await asyncio.to_thread(k8s.exec_read_file, log_file)
+        if live_logs:
+            return {"logs": live_logs}
+        
+        return {"logs": f"Task is currently in progress (Status: {repo_status}). Logs are being generated..."}
 
-    # 2. Determine which logs to fetch based on the repository status
-    if repo_status in [RepositoryStatus.DELETING.value, RepositoryStatus.DELETION_FAILED.value]:
-        pod_label_selector = f"app=crpaas-git-cleaner,pvc-path={pvc_path}"
-        not_found_message = f"No cleanup pod found for project '{pvc_path}'."
-    else:
-        pod_label_selector = f"job-name={job_name}"
-        not_found_message = f"No pod found for job '{job_name}'."
-
-    try:
-        # 3. Find the relevant pod using the determined label selector
-        pod_list = k8s.core_v1_api.list_namespaced_pod(
-            namespace=POD_NAMESPACE,
-            label_selector=pod_label_selector
-        )
-
-        if not pod_list.items:
-            return {"logs": f"{not_found_message} The pod may have been cleaned up or is still pending creation."}
-
-        # Get the most recent pod if there are multiple from retries
-        pod = sorted(pod_list.items, key=lambda p: p.metadata.creation_timestamp, reverse=True)[0]
-        pod_name = pod.metadata.name
-
-        # 4. Get logs from the pod
-        logs = k8s.core_v1_api.read_namespaced_pod_log(
-            name=pod_name,
-            namespace=POD_NAMESPACE
-        )
-        return {"logs": logs}
-
-    except ApiException as e:
-        logger.error(f"K8s API error when fetching logs for repo {record_id} (selector: {pod_label_selector}): {e}")
-        return {"logs": f"Error fetching logs from Kubernetes: {e.reason}"}
+    return {"logs": "No logs available for this repository."}
 
 async def cleanup_expired_repositories():
     """
@@ -457,9 +394,8 @@ async def cleanup_expired_repositories():
 
         logger.info(f"Found {len(expired_repos)} expired repositories to delete.")
         for repo in expired_repos:
-            # Since _trigger_repository_deletion now handles its own DB connection,
-            # we don't need to pass `db` anymore.
-            await _trigger_repository_deletion(repo['id'])
+            # Trigger cleanup directly (fire and forget in background loop)
+            asyncio.create_task(worker.perform_cleanup_task(repo['id']))
     finally:
         if db:
             await db.close()

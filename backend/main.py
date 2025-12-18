@@ -21,16 +21,16 @@ app = FastAPI(
 async def startup_event():
     """Start the worker on application startup (DB initialization is handled by db_init.py)."""
     
-    if not all([config.PVC_NAME, config.GIT_CLONER_IMAGE, config.POD_NAMESPACE]):
-        logger.error("FATAL: Missing environment variables! (SOURCE_CODE_PVC_NAME, GIT_CLONER_IMAGE, POD_NAMESPACE)")
+    if not all([config.PVC_NAME, config.POD_NAMESPACE]):
+        logger.error("FATAL: Missing environment variables! (SOURCE_CODE_PVC_NAME, POD_NAMESPACE)")
         # In a real scenario, the process should terminate here
     
     logger.info("Database initialization skipped (handled by pre-start script).")
     
     # Start the background worker
-    watcher_task = asyncio.create_task(worker.job_watcher_worker())
+    # watcher_task = asyncio.create_task(worker.job_watcher_worker()) # Deprecated
     auto_sync_task = asyncio.create_task(worker.auto_sync_worker())
-    app.state.worker_tasks = [watcher_task, auto_sync_task]
+    app.state.worker_tasks = [auto_sync_task]
     
     logger.info("FastAPI startup complete, background workers initiated.")
 

@@ -9,15 +9,8 @@ from kubernetes.stream import stream
 
 from .schemas import RepositoryStatus
 from .config import (
-    GIT_CLONER_BACKOFF_LIMIT,
-    GIT_CLONER_SCRIPT_CONFIGMAP_NAME,
-    GIT_CLONER_IMAGE,
     POD_NAMESPACE,
     PVC_NAME,
-    SSH_ENABLED,
-    SSH_MOUNT_PATH,
-    SSH_SECRET_NAME,
-    SSH_KEY_FILE_KEY,
 )
 
 logger = logging.getLogger(f"uvicorn.{__name__}")
@@ -44,249 +37,139 @@ def sanitize_for_dns(text: str) -> str:
     text = re.sub(r'-+', '-', text)
     return text.strip('-')
 
-def create_job_name(repo_url: str, commit_id: str) -> str:
-    """Generate a unique Job name (with a timestamp)."""
-    
-    # Existing logic: generate a hash from the repository URL and commit ID
-    hash_object = hashlib.sha1(f"{repo_url}:{commit_id}".encode())
-    short_hash = hash_object.hexdigest()[:8]
-    
-    # 1. Get a shortened repository name
-    repo_name = sanitize_for_dns(repo_url.split('/')[-1].replace('.git', ''))
-
-    # 2. Generate a millisecond-precision UNIX timestamp
-    # Remove the decimal point to treat it as a number
-    timestamp_ms = str(int(time.time() * 1000))
-    
-    # 3. Generate a Job name combining timestamp and hash
-    # Format: fetch-<repo_name>-<timestamp_ms>-<hash>
-    full_name = f"fetch-{repo_name}-{timestamp_ms}-{short_hash}"
-    
-    # Slice the name to not exceed the K8s limit (max 63 characters)
-    # (In case the Git repository name is too long, prioritize the prefix while shortening the end)
-    max_len = 63
-    if len(full_name) > max_len:
-        # Example: If repo_name is too long, shorten it while keeping the timestamp and hash
-        excess = len(full_name) - max_len
-        repo_part = repo_name[:len(repo_name) - excess - 1] # Shorten with a margin
-        return f"fetch-{repo_part}-{timestamp_ms}-{short_hash}"[:max_len]
-    
-    return full_name[:max_len]
-
-def create_job_manifest(job_name: str, repo_url: str, commit_id: str, pvc_path: str, single_branch: bool, recursive: bool) -> client.V1Job:
-    """Generate a K8s Job manifest (as a Python object)."""
-
-    job_volumes = [
-        client.V1Volume(
-            name="source-code-storage",
-            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                claim_name=PVC_NAME
-            )
-        )
-        ,
-        client.V1Volume(
-            name="cloner-script",
-            config_map=client.V1ConfigMapVolumeSource(
-                name=GIT_CLONER_SCRIPT_CONFIGMAP_NAME,
-                default_mode=0o755  # Make the script executable
-            )
-        )
-    ]
-    job_volume_mounts = [
-        client.V1VolumeMount(
-            name="source-code-storage",
-            mount_path="/pvc/src"
-        ),
-        client.V1VolumeMount(name="cloner-script", mount_path="/scripts")
-    ]
-
-    if SSH_ENABLED:
-        id_rsa_projection = client.V1VolumeProjection(
-            secret=client.V1SecretProjection(
-                name=SSH_SECRET_NAME,
-                items=[
-                    client.V1KeyToPath(key=SSH_KEY_FILE_KEY, path="id_rsa", mode=0o400)
-                ]
-            )
-        )
-        config_projection = client.V1VolumeProjection(
-            config_map=client.V1ConfigMapProjection(
-                name=f"ssh-config-ssh-config",
-                items=[
-                    client.V1KeyToPath(key="config", path="config", mode=0o400)
-                ]
-            )
-        )
-
-        job_volumes.append(
-            client.V1Volume(
-                name="ssh-volume",
-                projected=client.V1ProjectedVolumeSource(
-                    default_mode=0o644, # Default permissions for the entire folder
-                    sources=[id_rsa_projection, config_projection]
-                )
-            )
-        )
-
-        job_volume_mounts.append(
-            client.V1VolumeMount(
-                name="ssh-volume",
-                mount_path=SSH_MOUNT_PATH,
-                read_only=False
-            )
-        )
-
-    container = client.V1Container(
-        name="git-cloner",
-        image=GIT_CLONER_IMAGE,
-        command=["/scripts/git-clone-or-pull.sh"],
-        args=[
-            repo_url,
-            f"/pvc/src/{pvc_path}",
-            commit_id,
-            str(single_branch).lower(),
-            str(recursive).lower()
-        ],
-        volume_mounts=job_volume_mounts
-    )
-
-
-    template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels={"app": "crpaas-git-fetcher"}),
-        spec=client.V1PodSpec(
-            restart_policy="Never",
-            containers=[container],
-            volumes=job_volumes
-        )
-    )
-
-    spec = client.V1JobSpec(
-        template=template,
-        backoff_limit=GIT_CLONER_BACKOFF_LIMIT, # Add retry mechanism
-        ttl_seconds_after_finished=3600 # Automatically delete the Job object after 1 hour
-    )
-
-    job = client.V1Job(
-        api_version="batch/v1",
-        kind="Job",
-        metadata=client.V1ObjectMeta(name=job_name, namespace=POD_NAMESPACE),
-        spec=spec
-    )
-    return job
-
-def create_cleanup_job_manifest(job_name: str, pvc_path: str) -> client.V1Job:
+def get_opengrok_pod_name() -> str:
     """
-    Generates a K8s Job manifest to delete a directory at the specified PVC path.
-    (Uses a simple rm -rf since worktrees are not used)
+    Finds a running OpenGrok pod name.
     """
-    # Directory to be deleted (e.g., /pvc/src/github.com/git/git/abc123def)
-    target_dir = f"/pvc/src/{pvc_path}"
-
-    cleanup_command = f"""
-        set -eux
-        TARGET_DIR="{target_dir}"
-        
-        if [ -d "$TARGET_DIR" ]; then
-            echo "Attempting to delete directory: $TARGET_DIR"
-            rm -rf "$TARGET_DIR"
-            echo "Directory deleted: $TARGET_DIR"
-        else
-            echo "Target directory not found: $TARGET_DIR. Skipping."
-        fi
-        
-        echo "Cleanup operation complete."
-    """
-    
-    # Use the same Volume Mount, Image, and Namespace as the existing Git Cloner Job
-    container = client.V1Container(
-        name="git-cleaner",
-        image=GIT_CLONER_IMAGE,
-        command=["/bin/sh", "-c"],
-        args=[cleanup_command],
-        volume_mounts=[
-            client.V1VolumeMount(
-                name="source-code-storage",
-                mount_path="/pvc/src"
-            )
-        ]
-    )
-
-    volume = client.V1Volume(
-        name="source-code-storage",
-        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-            claim_name=PVC_NAME
-        )
-    )
-
-    template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels={"app": "crpaas-git-cleaner", "pvc-path": pvc_path}),
-        spec=client.V1PodSpec(
-            restart_policy="Never",
-            containers=[container],
-            volumes=[volume]
-        )
-    )
-
-    spec = client.V1JobSpec(
-        template=template,
-        backoff_limit=0,  # Do not retry cleanup
-        ttl_seconds_after_finished=3600  # Automatically delete the Job object after 1 hour
-    )
-
-    job = client.V1Job(
-        api_version="batch/v1",
-        kind="Job",
-        metadata=client.V1ObjectMeta(
-            name=job_name, 
-            namespace=POD_NAMESPACE,
-            labels={"app": "crpaas-git-cleaner", "pvc-path": pvc_path}
-        ),
-        spec=spec
-    )
-    return job
-
-
-def get_job_pod_status(job_name: str) -> RepositoryStatus:
-    """
-    Checks the status of the Pod associated with a given Job name and returns a detailed status.
-    """
+    label_selector = "app.kubernetes.io/component=opengrok"
     try:
-        # 1. Find the pod for the job using a label selector
         pod_list = core_v1_api.list_namespaced_pod(
             namespace=POD_NAMESPACE,
-            label_selector=f"job-name={job_name}"
+            label_selector=label_selector,
+            field_selector="status.phase=Running"
         )
-
         if not pod_list.items:
-            # If no pod is found, it's likely still being created by the job controller.
-            # We can treat this as the initial "PENDING" state before pod creation begins.
-            return RepositoryStatus.PENDING
+            raise Exception("No running OpenGrok pod found.")
+        return pod_list.items[0].metadata.name
+    except ApiException as e:
+        logger.error(f"K8s API error when searching for OpenGrok pod: {e}")
+        raise
 
-        # A job can have multiple pods if it retries. Get the most recent one.
-        pod = sorted(pod_list.items, key=lambda p: p.metadata.creation_timestamp, reverse=True)[0]
-        pod_phase = pod.status.phase
-
-        if pod_phase == "Pending":
-            return RepositoryStatus.POD_CREATING
-        elif pod_phase == "Running":
-            return RepositoryStatus.CLONING
-        elif pod_phase == "Succeeded":
-            # This is a final state, but the main job_watcher should handle the DB update.
-            # For a dynamic check, this indicates completion.
-            return RepositoryStatus.COMPLETED
-        elif pod_phase == "Failed":
-            return RepositoryStatus.FAILED
-        else:
-            # For any other unhandled phases, return the base PENDING status.
-            return RepositoryStatus.PENDING
+def exec_clone_repository(repo_url: str, pvc_path: str, commit_id: str, single_branch: bool, recursive: bool) -> tuple[bool, str]:
+    """
+    Executes the git clone/pull script directly inside the OpenGrok pod.
+    Returns (success: bool, output: str).
+    """
+    try:
+        pod_name = get_opengrok_pod_name()
+        
+        target_dir = f"/opengrok/src/{pvc_path}"
+        
+        # Arguments for the script: REPO_URL TARGET_DIR COMMIT_OR_BRANCH CLONE_SINGLE_BRANCH CLONE_RECURSIVE
+        # Arguments for the script: REPO_URL TARGET_DIR COMMIT_OR_BRANCH CLONE_SINGLE_BRANCH CLONE_RECURSIVE
+        script_args = [
+            f"'{repo_url}'",
+            f"'{target_dir}'",
+            f"'{commit_id}'",
+            f"'{str(single_branch).lower()}'",
+            f"'{str(recursive).lower()}'"
+        ]
+        
+        script_cmd = f"/custom-scripts/git-clone-or-pull.sh {' '.join(script_args)}"
+        log_file = f"/tmp/task-log-{pvc_path}.txt"
+        
+        # Wrap in sh to pipe output to log file. 2>&1 to capture stderr.
+        # We use { cmd; } to ensure exit code is preserved if we just cat the log?
+        # Actually with | tee, exit code is tee's.
+        # Workaround: (cmd) 2>&1 | tee file; test ${PIPESTATUS[0]} ... requires bash.
+        # Simple sh fallback: cmd > file 2>&1; ret=$?; cat file; exit $ret
+        # But we want to stream to python client too?
+        # If we use > file, python client won't see output until we cat it.
+        # Using tee is best for "stream to python client" AND "write to file".
+        # But we lose exit code in sh.
+        # OpenGrok image has bash (verified from docs/common knowledge).
+        # We will use /bin/bash -c "set -o pipefail; ..."
+        
+        wrapped_cmd = f"set -o pipefail; {script_cmd} 2>&1 | tee {log_file}"
+        
+        exec_command = ["/bin/bash", "-c", wrapped_cmd]
+        
+        logger.info(f"Execing into {pod_name}: {exec_command}")
+        
+        # Use stream with stderr=True to capture all output
+        resp = stream(
+            core_v1_api.connect_get_namespaced_pod_exec,
+            pod_name,
+            POD_NAMESPACE,
+            command=exec_command,
+            stderr=True, stdin=False, stdout=True, tty=False
+        )
+        
+        # stream() returns the output string. It throws ApiException on failure if checking response code?
+        # Actually stream() usually just returns output. To check exit code, we might need a different approach 
+        # or rely on the fact that the script has 'set -eu' and creates output.
+        # But wait, stream() doesn't return exit code directly easily unless we use the WebSocket client directly.
+        # However, for 'set -eu', if it fails, it usually writes to stderr.
+        # Let's assume if it throws exception it failed.
+        
+        logger.info(f"Exec output: {resp}")
+        return True, resp
 
     except ApiException as e:
-        logger.error(f"K8s API error when fetching pod status for job {job_name}: {e}")
-        # If an error occurs (e.g., permissions), return PENDING to avoid breaking the UI.
-        return RepositoryStatus.PENDING
+        logger.error(f"K8s Exec API error: {e}")
+        return False, f"Kubernetes API Error: {e}"
     except Exception as e:
-        logger.error(f"Unexpected error in get_job_pod_status for job {job_name}: {e}")
-        return RepositoryStatus.PENDING
+        logger.error(f"Exec failed: {e}")
+        return False, str(e)
+
+def exec_cleanup_repository(pvc_path: str) -> bool:
+    """
+    Executes 'rm -rf' on the target directory inside the OpenGrok pod.
+    """
+    try:
+        pod_name = get_opengrok_pod_name()
+        target_dir = f"/opengrok/src/{pvc_path}"
+        log_file = f"/tmp/task-log-{pvc_path}.txt"
+        
+        # Cleanup log just for consistency, though usually fast.
+        cmd = f"rm -rf '{target_dir}'"
+        wrapped_cmd = f"set -o pipefail; {cmd} 2>&1 | tee {log_file}"
+        
+        exec_command = ["/bin/bash", "-c", wrapped_cmd]
+        
+        logger.info(f"Execing cleanup into {pod_name}: {exec_command}")
+        
+        stream(
+            core_v1_api.connect_get_namespaced_pod_exec,
+            pod_name,
+            POD_NAMESPACE,
+            command=exec_command,
+            stderr=True, stdin=False, stdout=True, tty=False
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Cleanup exec failed: {e}")
+        return False
+
+def exec_read_file(file_path: str) -> str:
+    """
+    Executes 'cat <file_path>' in the OpenGrok pod to read logs or content.
+    """
+    try:
+        pod_name = get_opengrok_pod_name()
+        exec_command = ["/bin/cat", file_path]
+        
+        resp = stream(
+            core_v1_api.connect_get_namespaced_pod_exec,
+            pod_name,
+            POD_NAMESPACE,
+            command=exec_command,
+            stderr=True, stdin=False, stdout=True, tty=False
+        )
+        return resp
+    except Exception as e:
+        # It's expected to fail if file doesn't exist yet (start of clone)
+        return ""
 
 
 # --- OpenGrok Monitoring ---

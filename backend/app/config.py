@@ -2,9 +2,6 @@ import os
 
 # --- Environment Variables (passed from Helm chart) ---
 PVC_NAME = os.environ.get("SOURCE_CODE_PVC_NAME")
-GIT_CLONER_IMAGE = os.environ.get("GIT_CLONER_IMAGE")
-GIT_CLONER_BACKOFF_LIMIT = int(os.environ.get("GIT_CLONER_BACKOFF_LIMIT", 3))
-GIT_CLONER_SCRIPT_CONFIGMAP_NAME = os.environ.get("GIT_CLONER_SCRIPT_CONFIGMAP_NAME")
 POD_NAMESPACE = os.environ.get("POD_NAMESPACE")
 OPEN_GROK_REINDEX_SERVICE_HOST = os.environ.get("OPEN_GROK_REINDEX_SERVICE_HOST")
 OPEN_GROK_REINDEX_PORT = os.environ.get("OPEN_GROK_REINDEX_PORT")

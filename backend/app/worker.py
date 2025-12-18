@@ -16,7 +16,8 @@ from .config import (
 )
 from . import k8s
 from .database import custom_connection_factory
-from .k8s import batch_v1_api
+from . import k8s
+from .database import custom_connection_factory
 
 logger = logging.getLogger(f"uvicorn.{__name__}")
 STOP_WATCHER = asyncio.Event()
@@ -45,120 +46,88 @@ async def trigger_opengrok_reindex(job_name: str):
     except Exception as e:
         logger.error(f"An unexpected error occurred while triggering reindex: {e}")
 
-async def job_watcher_worker():
+async def perform_clone_task(record_id: int, repo_url: str, pvc_path: str, commit_id: str, single_branch: bool, recursive: bool):
     """
-    Background task to monitor the status of K8s Jobs.
-    Manages DB connection on each loop iteration.
+    Background task to execute git clone/pull in OpenGrok pod and update DB status.
     """
-    logger.info("Starting Kubernetes Job Watcher.")
+    logger.info(f"Starting clone task for repo ID {record_id}")
     
-    while not STOP_WATCHER.is_set():
-        await asyncio.sleep(WATCH_INTERVAL_SEC)
-        
-        db = None 
-        try:
-            # Create a dedicated connection for the worker each time
-            db = await aiosqlite.connect(DB_PATH, factory=custom_connection_factory)
-            
-            async with db.execute("SELECT id, job_name, status, pvc_path FROM repositories WHERE status IN ('PENDING', 'DELETING')") as cursor:
-                active_repos = await cursor.fetchall()
-
-            if not active_repos:
-                logger.debug("No active jobs (PENDING or DELETING) found. Continuing watch.")
-                continue
-
-            for repo in active_repos:
-                if repo['status'] == 'PENDING':
-                    await check_cloning_job_status(db, repo)
-                elif repo['status'] == 'DELETING':
-                    await check_cleanup_job_status(db, repo)
-
-        except Exception as e:
-            logger.error(f"Error during database operation in watcher: {e}")
-
-        finally:
-            # Always close the connection used in this loop at the end of the iteration
-            if db:
-                await db.close()
-                
-    logger.info("Kubernetes Job Watcher stopped.")
-
-
-async def check_cloning_job_status(db: aiosqlite.Connection, repo: aiosqlite.Row):
-    """Checks the status of a cloning job and updates the DB."""
-    job_name = repo['job_name']
-    new_status = None
+    # 1. Update status to CLONING
     try:
-        k8s_job = batch_v1_api.read_namespaced_job_status(name=job_name, namespace=POD_NAMESPACE)
-        
-        if k8s_job.status.succeeded is not None and k8s_job.status.succeeded >= 1:
-            new_status = 'COMPLETED'
-            logger.info(f"Job COMPLETED: {job_name}")
-            await trigger_opengrok_reindex(job_name)
-            
-        elif k8s_job.status.failed is not None and k8s_job.status.failed >= 1:
-            new_status = 'FAILED'
-            logger.warning(f"Job FAILED: {job_name}")
-        
-        if new_status:
+        async with aiosqlite.connect(DB_PATH, factory=custom_connection_factory) as db:
             await db.execute(
-                "UPDATE repositories SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
-                (new_status, job_name)
+                "UPDATE repositories SET status = 'CLONING', updated_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc), record_id)
             )
             await db.commit()
-
-    except ApiException as e:
-        if e.status == 404:
-            logger.warning(f"Job {job_name} not found in K8s (404). Setting DB status to UNKNOWN_CLEANUP.")
-            await db.execute(
-                "UPDATE repositories SET status = 'UNKNOWN_CLEANUP', updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
-                (job_name,)
-            )
-            await db.commit()
-        else:
-            logger.error(f"Error reading K8s Job {job_name}: {e}")
     except Exception as e:
-        logger.error(f"An unexpected error occurred during job check for {job_name}: {e}")
+        logger.error(f"Failed to update status to CLONING for repo {record_id}: {e}")
 
-
-async def check_cleanup_job_status(db: aiosqlite.Connection, repo: aiosqlite.Row):
-    """Checks the status of a cleanup job and updates the DB."""
-    repo_id = repo['id']
-    pvc_path = repo['pvc_path']
+    # 2. Exec (blocking call, run in thread)
+    success, output = await asyncio.to_thread(
+        k8s.exec_clone_repository, 
+        repo_url, pvc_path, commit_id, single_branch, recursive
+    )
+    
+    # 3. Update DB with final status
+    new_status = 'COMPLETED' if success else 'FAILED'
+    current_timestamp = datetime.now(timezone.utc)
     
     try:
-        # Find the cleanup job by label selector
-        label_selector = f"app=crpaas-git-cleaner,pvc-path={pvc_path}"
-        job_list = batch_v1_api.list_namespaced_job(namespace=POD_NAMESPACE, label_selector=label_selector)
+        async with aiosqlite.connect(DB_PATH, factory=custom_connection_factory) as db:
+            await db.execute(
+                "UPDATE repositories SET status = ?, updated_at = ?, task_log = ? WHERE id = ?",
+                (new_status, current_timestamp, output, record_id)
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to update DB for repo {record_id}: {e}")
+        return
 
-        if not job_list.items:
-            logger.warning(f"No cleanup job found for pvc_path: {pvc_path}. Waiting for creation.")
+    if success:
+        logger.info(f"Clone success for {record_id}.")
+        await trigger_opengrok_reindex(f"repo-{record_id}")
+    else:
+        logger.error(f"Clone failed for {record_id}. Output: {output}")
+
+async def perform_cleanup_task(record_id: int):
+    """
+    Background task to execute cleanup and update status/delete record.
+    """
+    db = None
+    try:
+        db = await aiosqlite.connect(DB_PATH, factory=custom_connection_factory)
+        
+        async with db.execute("SELECT pvc_path FROM repositories WHERE id = ?", (record_id,)) as cursor:
+            record = await cursor.fetchone()
+        
+        if not record:
             return
 
-        # Get the most recent job if multiple exist
-        cleanup_job = sorted(job_list.items, key=lambda j: j.metadata.creation_timestamp, reverse=True)[0]
-        cleanup_job_name = cleanup_job.metadata.name
-
-        if cleanup_job.status.succeeded is not None and cleanup_job.status.succeeded >= 1:
-            logger.info(f"Cleanup job {cleanup_job_name} SUCCEEDED for repo ID {repo_id}.")
-            # On success, delete the repository record from the database
-            await db.execute("DELETE FROM repositories WHERE id = ?", (repo_id,))
-            await db.commit()
-            logger.info(f"Repository record for ID {repo_id} deleted.")
-
-        elif cleanup_job.status.failed is not None and cleanup_job.status.failed >= 1:
-            logger.error(f"Cleanup job {cleanup_job_name} FAILED for repo ID {repo_id}.")
-            # On failure, update the status to DELETION_FAILED
+        pvc_path = record['pvc_path']
+        
+        logger.info(f"Starting cleanup for repo ID {record_id} ({pvc_path})")
+        
+        success = await asyncio.to_thread(k8s.exec_cleanup_repository, pvc_path)
+        
+        if success:
+            await db.execute("DELETE FROM repositories WHERE id = ?", (record_id,))
+            logger.info(f"Cleanup SUCCEEDED for repo ID {record_id}.")
+            await trigger_opengrok_reindex(f"cleanup-repo-{record_id}")
+        else:
+            logger.error(f"Cleanup FAILED for repo ID {record_id}.")
             await db.execute(
-                "UPDATE repositories SET status = 'DELETION_FAILED', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (repo_id,)
+                "UPDATE repositories SET status = 'DELETION_FAILED', updated_at = ?, task_log = ? WHERE id = ?",
+                (datetime.now(timezone.utc), "Cleanup failed via exec.", record_id)
             )
-            await db.commit()
+        await db.commit()
 
-    except ApiException as e:
-        logger.error(f"API error checking cleanup job for repo ID {repo_id}: {e}")
     except Exception as e:
-        logger.error(f"Unexpected error in check_cleanup_job_status for repo ID {repo_id}: {e}")
+        logger.error(f"Error in cleanup task for {record_id}: {e}")
+    finally:
+        if db:
+            await db.close()
+
 
 
 async def auto_sync_worker():
@@ -227,27 +196,20 @@ async def auto_sync_worker():
                 logger.info(f"Triggering auto-sync for repository ID: {repo['id']} ({repo['repo_url']})")
 
                 try:
-                    # Create a new, unique job name for the sync operation
-                    new_job_name = k8s.create_job_name(repo['repo_url'], repo['commit_id'])
-
-                    # Generate the K8s Job manifest
-                    job_manifest = k8s.create_job_manifest(
-                        new_job_name,
+                    # Trigger the clone task
+                    asyncio.create_task(perform_clone_task(
+                        repo['id'],
                         repo['repo_url'],
-                        repo['commit_id'],
                         repo['pvc_path'],
+                        repo['commit_id'],
                         repo['clone_single_branch'],
                         repo['clone_recursive']
-                    )
-
-                    # Create the new Job via the K8s API
-                    k8s.batch_v1_api.create_namespaced_job(body=job_manifest, namespace=POD_NAMESPACE)
-                    logger.info(f"Created auto-sync Job: {new_job_name} for repository ID: {repo['id']}")
+                    ))
 
                     # Update the database record
                     await db.execute(
-                        "UPDATE repositories SET status = 'PENDING', job_name = ?, last_synced_at = ? WHERE id = ?",
-                        (new_job_name, current_check_time, repo['id'])
+                        "UPDATE repositories SET status = 'PENDING', job_name = 'SYNC', last_synced_at = ? WHERE id = ?",
+                        (current_check_time, repo['id'])
                     )
                     await db.commit()
 

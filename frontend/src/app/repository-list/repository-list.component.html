@@ -64,7 +64,7 @@
             <cds-icon shape="sync" status="info"></cds-icon>
             Cloning
           </span>
-          <span *ngSwitchCase="'COMPLETED'" class="label label-success">
+          <span *ngSwitchCase="'COMPLETED'" class="label label-success clickable" (click)="openLogsModal(repo)">
             <cds-icon shape="check-circle"></cds-icon>
             Ready
           </span>
@@ -120,8 +120,6 @@
             <dl class="key-value-list">
               <dt>Commit ID</dt>
               <dd><code>{{ repo.commit_id }}</code></dd>
-              <dt>Internal Job Name</dt>
-              <dd><code>{{ repo.job_name }}</code></dd>
             </dl>
           </div>
           <div class="clr-col-12 clr-col-md-6">
