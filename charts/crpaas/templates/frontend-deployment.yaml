@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: "{{ .Values.crpaasUi.image.repository }}:{{ .Values.crpaasUi.image.tag }}"
+          image: "{{ .Values.crpaasUi.image.repository }}:{{ .Values.crpaasUi.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.crpaasUi.image.pullPolicy }}
           ports:
             - name: http

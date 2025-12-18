@@ -2,7 +2,7 @@ opengrok:
   image:
     repository: opengrok/docker
     pullPolicy: IfNotPresent
-    tag: "latest"
+    tag: "1.14.4"
 
   # Environment variables for the OpenGrok container
   env:
@@ -60,7 +60,7 @@ crpaasUi:
   image:
     repository: "ghcr.io/yukiuuh/crpaas-ui"
     pullPolicy: IfNotPresent
-    tag: "v0.0.2"
+    tag: ""
 
   service:
     type: LoadBalancer
@@ -96,7 +96,7 @@ crpaasManager:
   image:
     repository: "ghcr.io/yukiuuh/crpaas-manager"
     pullPolicy: IfNotPresent
-    tag: "v0.0.2"
+    tag: ""
 
   service:
     type: LoadBalancer
@@ -131,7 +131,7 @@ crpaasManager:
   gitCloner:
     image:
       repository: alpine/git
-      tag: "latest"
+      tag: "v2.45.2"
     # Number of retries before marking the git-clone Job as failed.
     backoffLimit: 3
   

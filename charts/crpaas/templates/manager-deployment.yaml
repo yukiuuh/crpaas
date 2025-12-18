@@ -23,7 +23,7 @@ spec:
       {{- end }}
       containers:
         - name: manager
-          image: "{{ .Values.crpaasManager.image.repository }}:{{ .Values.crpaasManager.image.tag }}"
+          image: "{{ .Values.crpaasManager.image.repository }}:{{ .Values.crpaasManager.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.crpaasManager.image.pullPolicy }}
           ports:
             - name: http
