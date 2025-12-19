@@ -17,7 +17,7 @@ export class RepositoryAddFormComponent {
     commit_id: '',
     project_name: '',
     retention_days: 21, // Default retention period in days
-    clone_single_branch: false,
+    clone_single_branch: true,
     clone_recursive: false,
     auto_sync_enabled: false,
     auto_sync_schedule: '00:00'
