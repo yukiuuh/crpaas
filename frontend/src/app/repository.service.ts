@@ -100,4 +100,12 @@ export class RepositoryService {
       this.http.put<Repository>(`/api/v1/repository/${repo.id}/autosync`, updatePayload));
     return forkJoin(updateObservables);
   }
+
+  exportRepositories(): Observable<any> {
+    return this.http.get('/api/v1/repositories/export');
+  }
+
+  importRepositories(data: { repositories: any[] }): Observable<any> {
+    return this.http.post('/api/v1/repositories/import', data);
+  }
 }

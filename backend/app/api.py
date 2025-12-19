@@ -12,12 +12,16 @@ from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 from . import k8s, worker
+from .worker import K8S_EXEC_LOCK
+
 from .config import POD_NAMESPACE, OPEN_GROK_BASE_URL, DB_PATH
 from .database import get_db_session, custom_connection_factory
 from .schemas import (
     RepositoryInfo, RepositoryRequest, RepositoryExpirationUpdateRequest, JobLogs, 
     AppConfig, RepositoryAutoSyncUpdateRequest, OpenGrokPodStatus, 
-    OpenGrokDeploymentStatus, OpenGrokStatusResponse, RepositoryStatus
+    OpenGrokDeploymentStatus, OpenGrokStatusResponse, RepositoryStatus,
+    RepositoryExport, RepositoriesExportResponse, RepositoriesImportRequest,
+    RepositoryImportResult, RepositoriesImportResponse
 )
 
 logger = logging.getLogger(f"uvicorn.{__name__}")
@@ -337,6 +341,143 @@ async def update_repo_status(repo: RepositoryInfo):
     """
     pass
 
+
+@router.get("/repositories/export", response_model=RepositoriesExportResponse)
+async def export_repositories(
+    db: aiosqlite.Connection = Depends(get_db_session)
+):
+    """
+    Exports all repositories as JSON for backup or migration purposes.
+    Only includes configuration data, not runtime status or logs.
+    """
+    async with db.execute("SELECT * FROM repositories ORDER BY created_at DESC") as cursor:
+        rows = await cursor.fetchall()
+    
+    now = datetime.now(timezone.utc)
+    exports = []
+    
+    for row in rows:
+        # Calculate retention_days from expired_at
+        retention_days = None
+        if row['expired_at']:
+            expired_at = datetime.fromisoformat(row['expired_at'].replace('Z', '+00:00')) if isinstance(row['expired_at'], str) else row['expired_at']
+            # Calculate remaining days from now (rounded up)
+            remaining = (expired_at - now).days
+            retention_days = max(0, remaining)  # Don't export negative days
+        
+        exports.append(RepositoryExport(
+            repo_url=row['repo_url'],
+            commit_id=row['commit_id'],
+            pvc_path=row['pvc_path'],
+            clone_single_branch=row['clone_single_branch'],
+            clone_recursive=row['clone_recursive'],
+            retention_days=retention_days,
+            auto_sync_enabled=row['auto_sync_enabled'],
+            auto_sync_schedule=row['auto_sync_schedule']
+        ))
+    
+    return RepositoriesExportResponse(
+        exported_at=now,
+        repositories=exports
+    )
+
+
+@router.post("/repositories/import", response_model=RepositoriesImportResponse)
+async def import_repositories(
+    req: RepositoriesImportRequest,
+    background_tasks: BackgroundTasks,
+    db: aiosqlite.Connection = Depends(get_db_session)
+):
+    """
+    Imports repositories from a JSON export.
+    Skips duplicates (existing pvc_path) and reports results for each repository.
+    """
+    results: list[RepositoryImportResult] = []
+    created_count = 0
+    skipped_count = 0
+    error_count = 0
+    
+    for repo_export in req.repositories:
+        try:
+            # Check if pvc_path already exists
+            async with db.execute(
+                "SELECT id, repo_url FROM repositories WHERE pvc_path = ?", 
+                (repo_export.pvc_path,)
+            ) as cursor:
+                existing = await cursor.fetchone()
+            
+            if existing:
+                results.append(RepositoryImportResult(
+                    pvc_path=repo_export.pvc_path,
+                    status="skipped",
+                    message=f"Already exists (ID: {existing['id']}, URL: {existing['repo_url']})"
+                ))
+                skipped_count += 1
+                continue
+            
+            # Calculate expired_at from retention_days
+            expired_at = None
+            if repo_export.retention_days is not None and repo_export.retention_days > 0:
+                expired_at = datetime.now(timezone.utc) + timedelta(days=repo_export.retention_days)
+            
+            # Insert new repository
+            async with db.execute(
+                """
+                INSERT INTO repositories (
+                    repo_url, commit_id, status, job_name, pvc_path, expired_at, 
+                    clone_single_branch, clone_recursive, last_synced_at,
+                    auto_sync_enabled, auto_sync_schedule
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    repo_export.repo_url, repo_export.commit_id, RepositoryStatus.PENDING.value, 
+                    "IMPORT", repo_export.pvc_path, expired_at,
+                    repo_export.clone_single_branch, repo_export.clone_recursive,
+                    datetime.now(timezone.utc),
+                    repo_export.auto_sync_enabled,
+                    repo_export.auto_sync_schedule if repo_export.auto_sync_enabled else None
+                )
+            ) as cursor:
+                await db.commit()
+                record_id = cursor.lastrowid
+            
+            # Add background task to clone repository
+            background_tasks.add_task(
+                worker.perform_clone_task,
+                record_id=record_id,
+                repo_url=repo_export.repo_url,
+                pvc_path=repo_export.pvc_path,
+                commit_id=repo_export.commit_id,
+                single_branch=repo_export.clone_single_branch,
+                recursive=repo_export.clone_recursive
+            )
+            
+            results.append(RepositoryImportResult(
+                pvc_path=repo_export.pvc_path,
+                status="created",
+                message=f"Import initiated (ID: {record_id})"
+            ))
+            created_count += 1
+            
+        except Exception as e:
+            logger.error(f"Error importing repository {repo_export.pvc_path}: {e}")
+            results.append(RepositoryImportResult(
+                pvc_path=repo_export.pvc_path,
+                status="error",
+                message=str(e)
+            ))
+            error_count += 1
+    
+    logger.info(f"Import completed: {created_count} created, {skipped_count} skipped, {error_count} errors")
+    
+    return RepositoriesImportResponse(
+        total=len(req.repositories),
+        created=created_count,
+        skipped=skipped_count,
+        errors=error_count,
+        results=results
+    )
+
 @router.get("/repository/{record_id}/logs", response_model=JobLogs)
 async def get_repository_logs(
     record_id: int,
@@ -365,7 +506,8 @@ async def get_repository_logs(
     # 3. If in progress, try to read the real-time log from the pod
     if repo_status in [RepositoryStatus.PENDING.value, RepositoryStatus.CLONING.value, RepositoryStatus.POD_CREATING.value, RepositoryStatus.DELETING.value]:
         log_file = f"/tmp/task-log-{pvc_path}.txt"
-        live_logs = await asyncio.to_thread(k8s.exec_read_file, log_file)
+        async with K8S_EXEC_LOCK:
+            live_logs = await asyncio.to_thread(k8s.exec_read_file, log_file)
         if live_logs:
             return {"logs": live_logs}
         
@@ -428,7 +570,8 @@ async def get_opengrok_status():
         # Create a status object for each pod
         pod_name = pod.metadata.name
         metrics = k8s.get_pod_metrics(pod_name)
-        storage_list_of_dicts = k8s.get_storage_usage(pod_name)
+        async with K8S_EXEC_LOCK:
+            storage_list_of_dicts = await asyncio.to_thread(k8s.get_storage_usage, pod_name)
         
         pod_status = OpenGrokPodStatus(
             pod_name=pod_name,

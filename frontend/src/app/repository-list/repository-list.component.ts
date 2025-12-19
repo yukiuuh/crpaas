@@ -14,10 +14,14 @@ import {
   calendarIcon,
   popOutIcon,
   alarmClockIcon,
+  exportIcon,
+  importIcon,
+  ellipsisVerticalIcon,
 } from '@cds/core/icon';
 import { RepositoryAddFormComponent } from '../repository-add-form/repository-add-form.component';
 import '@cds/core/icon/register.js';
-ClarityIcons.addIcons(trashIcon, hourglassIcon, syncIcon, checkCircleIcon, exclamationTriangleIcon, plusIcon, calendarIcon, popOutIcon, alarmClockIcon);
+ClarityIcons.addIcons(trashIcon, hourglassIcon, syncIcon, checkCircleIcon, exclamationTriangleIcon, plusIcon, calendarIcon, popOutIcon, alarmClockIcon, exportIcon, importIcon, ellipsisVerticalIcon);
+
 
 @Component({
   selector: 'app-repository-list',
@@ -41,11 +45,14 @@ export class RepositoryListComponent implements OnInit, OnDestroy {
   isUpdateExpirationModalOpen = false;
   isAutoSyncModalOpen = false;
   isLogsModalOpen = false;
+  isImportModalOpen = false;
   currentLogs: string = 'Loading logs...';
   openGrokBaseUrl: string | null = null;
   autoSyncSettings = { enabled: false, schedule: '00:00' };
   newRetentionDays: number = 21; // Default value for the update modal
   toast: { message: string, type: string } = { message: '', type: 'info' };
+  importFileContent: any = null;
+  importFileName: string = '';
 
   constructor(private repositoryService: RepositoryService) { }
 
@@ -184,6 +191,74 @@ export class RepositoryListComponent implements OnInit, OnDestroy {
 
   trackById(index: number, item: Repository): number {
     return item.id;
+  }
+
+  onExport(): void {
+    this.repositoryService.exportRepositories().subscribe({
+      next: (data) => {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const timestamp = new Date().toISOString().split('T')[0];
+        link.download = `crpaas-repositories-${timestamp}.json`;
+        link.click();
+        window.URL.revokeObjectURL(url);
+        this.showToast(`Exported ${data.repositories.length} repositories`, 'success');
+      },
+      error: (err) => {
+        this.showToast('Export failed: ' + (err.error?.detail || err.message), 'danger');
+      }
+    });
+  }
+
+  onImportFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const file = input.files[0];
+      this.importFileName = file.name;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          this.importFileContent = JSON.parse(reader.result as string);
+        } catch (e) {
+          this.showToast('Invalid JSON file', 'danger');
+          this.importFileContent = null;
+        }
+      };
+      reader.readAsText(file);
+    } else {
+      this.importFileContent = null;
+      this.importFileName = '';
+    }
+  }
+
+  onImport(): void {
+    if (!this.importFileContent || !this.importFileContent.repositories) {
+      this.showToast('No valid repositories to import', 'danger');
+      return;
+    }
+    this.repositoryService.importRepositories({ repositories: this.importFileContent.repositories }).subscribe({
+      next: (result) => {
+        this.refreshList();
+        this.isImportModalOpen = false;
+        this.importFileContent = null;
+        this.importFileName = '';
+
+        let message = `Import completed: ${result.created} created`;
+        if (result.skipped > 0) {
+          message += `, ${result.skipped} skipped (duplicates)`;
+        }
+        if (result.errors > 0) {
+          message += `, ${result.errors} errors`;
+        }
+        const type = result.errors > 0 ? 'warning' : 'success';
+        this.showToast(message, type);
+      },
+      error: (err) => {
+        this.showToast('Import failed: ' + (err.error?.detail || err.message), 'danger');
+      }
+    });
   }
 
   ngOnDestroy(): void {

@@ -22,6 +22,11 @@ from .database import custom_connection_factory
 logger = logging.getLogger(f"uvicorn.{__name__}")
 STOP_WATCHER = asyncio.Event()
 
+# Global lock to ensure sequential execution of K8s commands (clone, pull, rm, df, etc.)
+# This is necessary because concurrent exec calls to the same pod can cause instability or failures.
+K8S_EXEC_LOCK = asyncio.Lock()
+
+
 async def trigger_opengrok_reindex(job_name: str):
     """
     Sends a GET request to the OpenGrok reindex endpoint.
@@ -63,11 +68,12 @@ async def perform_clone_task(record_id: int, repo_url: str, pvc_path: str, commi
     except Exception as e:
         logger.error(f"Failed to update status to CLONING for repo {record_id}: {e}")
 
-    # 2. Exec (blocking call, run in thread)
-    success, output = await asyncio.to_thread(
-        k8s.exec_clone_repository, 
-        repo_url, pvc_path, commit_id, single_branch, recursive
-    )
+    # 2. Exec (blocking call, run in thread, but locked sequentially)
+    async with K8S_EXEC_LOCK:
+        success, output = await asyncio.to_thread(
+            k8s.exec_clone_repository, 
+            repo_url, pvc_path, commit_id, single_branch, recursive
+        )
     
     # 3. Update DB with final status
     new_status = 'COMPLETED' if success else 'FAILED'
@@ -108,7 +114,8 @@ async def perform_cleanup_task(record_id: int):
         
         logger.info(f"Starting cleanup for repo ID {record_id} ({pvc_path})")
         
-        success = await asyncio.to_thread(k8s.exec_cleanup_repository, pvc_path)
+        async with K8S_EXEC_LOCK:
+            success = await asyncio.to_thread(k8s.exec_cleanup_repository, pvc_path)
         
         if success:
             await db.execute("DELETE FROM repositories WHERE id = ?", (record_id,))

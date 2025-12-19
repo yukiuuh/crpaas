@@ -29,6 +29,12 @@
           [disabled]="!selected || selected.length === 0">
           <cds-icon shape="trash"></cds-icon> DELETE
         </button>
+        <button type="button" class="btn btn-sm" (click)="onExport()">
+          <cds-icon shape="export"></cds-icon> Export All
+        </button>
+        <button type="button" class="btn btn-sm" (click)="isImportModalOpen = true">
+          <cds-icon shape="import"></cds-icon> Import
+        </button>
       </div>
     </clr-dg-action-bar>
     <clr-dg-column [clrDgField]="'pvc_path'">Name</clr-dg-column>
@@ -247,6 +253,37 @@
     <div class="modal-footer">
       <button type="button" class="btn btn-outline" (click)="isDeleteModalOpen = false">Cancel</button>
       <button type="button" class="btn btn-danger" (click)="onBatchDelete()">Yes, delete</button>
+    </div>
+  </clr-modal>
+
+  <!-- Import Modal -->
+  <clr-modal [(clrModalOpen)]="isImportModalOpen" [clrModalClosable]="false">
+    <h3 class="modal-title">Import Repositories</h3>
+    <div class="modal-body">
+      <form clrForm clrLayout="vertical">
+        <clr-file-input-container>
+          <label>JSON file</label>
+          <input type="file" (change)="onImportFileSelected($event)" required clrFileInput accept=".json" />
+          <clr-control-helper>
+            <ng-container *ngIf="!importFileContent">
+              Select a JSON file containing repository configurations to import.
+            </ng-container>
+            <ng-container *ngIf="importFileContent">
+              Found <b>{{ importFileContent.repositories?.length || 0 }}</b> repositories in
+              <code>{{ importFileName }}</code>.
+              <span *ngIf="importFileContent.exported_at" class="clr-subtext d-block">
+                Exported at: {{ importFileContent.exported_at | date:'medium' }}
+              </span>
+            </ng-container>
+          </clr-control-helper>
+          <clr-control-success></clr-control-success>
+          <clr-control-error></clr-control-error>
+        </clr-file-input-container>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" (click)="isImportModalOpen = false">Cancel</button>
+      <button type="button" class="btn btn-primary" (click)="onImport()" [disabled]="!importFileContent">Import</button>
     </div>
   </clr-modal>
 </div>

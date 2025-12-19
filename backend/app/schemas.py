@@ -142,3 +142,45 @@ class OpenGrokPodStatus(BaseModel):
 class OpenGrokStatusResponse(BaseModel):
     deployment_status: Optional[OpenGrokDeploymentStatus] = None
     pod_statuses: list[OpenGrokPodStatus]
+
+
+# --- Export/Import Schemas ---
+
+class RepositoryExport(BaseModel):
+    """Schema for a single repository in the export format."""
+    repo_url: str
+    commit_id: str
+    pvc_path: str
+    clone_single_branch: bool
+    clone_recursive: bool
+    retention_days: Optional[int] = None  # Calculated from expired_at, or None for indefinite
+    auto_sync_enabled: bool
+    auto_sync_schedule: Optional[str] = None
+
+
+class RepositoriesExportResponse(BaseModel):
+    """Response schema for the export endpoint."""
+    version: str = "1.0"
+    exported_at: datetime
+    repositories: list[RepositoryExport]
+
+
+class RepositoriesImportRequest(BaseModel):
+    """Request schema for the import endpoint."""
+    repositories: list[RepositoryExport]
+
+
+class RepositoryImportResult(BaseModel):
+    """Result for a single repository import attempt."""
+    pvc_path: str
+    status: str  # "created", "skipped", "error"
+    message: Optional[str] = None
+
+
+class RepositoriesImportResponse(BaseModel):
+    """Response schema for the import endpoint."""
+    total: int
+    created: int
+    skipped: int
+    errors: int
+    results: list[RepositoryImportResult]
