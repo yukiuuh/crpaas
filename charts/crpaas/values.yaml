@@ -134,19 +134,22 @@ crpaasManager:
 
 storage:
   source:
-    # For OpenGrok source code, requires ReadWriteMany (RWX)
+    # For OpenGrok source code
     storageClassName: "longhorn"
     size: 50Gi
+    accessModes: "ReadWriteMany"
 
   data:
-    # For OpenGrok index data, requires ReadWriteOnce (RWO)
+    # For OpenGrok index data
     storageClassName: "longhorn"
     size: 50Gi
+    accessModes: "ReadWriteOnce"
 
   manager:
-    # For the manager's database (e.g., SQLite), requires ReadWriteOnce (RWO)
+    # For the manager's database
     storageClassName: "longhorn"
     size: 1Gi
+    accessModes: "ReadWriteOnce"
 
 rbac:
   create: true

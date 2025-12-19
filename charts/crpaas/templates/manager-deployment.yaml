@@ -45,7 +45,10 @@ spec:
               value: {{ .Values.crpaasManager.gitSsh.secretName | quote }}
             - name: GIT_SSH_KEY_FILE_KEY
               value: {{ .Values.crpaasManager.gitSsh.sshKeyFileKey | quote }}
-            {{ if and .Values.opengrok .Values.opengrok.ingress .Values.opengrok.ingress.enabled }}
+            {{ if .Values.opengrok.baseUrl }}
+            - name: OPEN_GROK_BASE_URL
+              value: {{ .Values.opengrok.baseUrl | quote }}
+            {{ else if and .Values.opengrok .Values.opengrok.ingress .Values.opengrok.ingress.enabled }}
             - name: OPEN_GROK_BASE_URL
               value: "https://{{ (index .Values.opengrok.ingress.hosts 0).host }}"
             {{ else }}

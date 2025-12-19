@@ -8,7 +8,7 @@ metadata:
 spec:
   storageClassName: {{ .Values.storage.source.storageClassName }}
   accessModes:
-    - ReadWriteMany
+    - {{ .Values.storage.source.accessModes }}
   resources:
     requests:
       storage: {{ .Values.storage.source.size }}
@@ -23,7 +23,7 @@ metadata:
 spec:
   storageClassName: {{ .Values.storage.data.storageClassName }}
   accessModes:
-    - ReadWriteOnce
+    - {{ .Values.storage.data.accessModes }}
   resources:
     requests:
       storage: {{ .Values.storage.data.size }}
@@ -38,7 +38,7 @@ metadata:
 spec:
   storageClassName: {{ .Values.storage.manager.storageClassName }}
   accessModes:
-    - ReadWriteOnce
+    - {{ .Values.storage.manager.accessModes }}
   resources:
     requests:
       storage: {{ .Values.storage.manager.size }}
