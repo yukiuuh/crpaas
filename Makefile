@@ -14,9 +14,19 @@ UI_IMAGE      := $(REGISTRY)/crpaas-ui
 # Image tag. Default is 'latest'. Override with `make TAG=v1.0.0 all`
 TAG ?= latest
 
-.PHONY: all build push build-manager build-ui push-manager push-ui help
+.PHONY: all build push build-manager build-ui push-manager push-ui test test-backend test-frontend help
 
 all: build push
+
+test: test-backend test-frontend ## Run all tests in containers
+
+test-backend: ## Run backend tests in a container
+	@echo "Running backend tests..."
+	$(DOCKER_CMD) build --target test -t crpaas-manager-test ./backend
+
+test-frontend: ## Run frontend tests in a container (headless)
+	@echo "Running frontend tests..."
+	$(DOCKER_CMD) build --target test -t crpaas-ui-test ./frontend
 
 build: build-manager build-ui ## Build both manager and ui images
 

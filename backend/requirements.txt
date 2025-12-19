@@ -5,3 +5,5 @@ pydantic
 aiosqlite
 httpx
 APScheduler
+pytest
+pytest-asyncio

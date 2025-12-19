@@ -20,16 +20,10 @@ describe('AppComponent', () => {
     expect(app).toBeTruthy();
   });
 
-  it(`should have as title 'crpaas-ui'`, () => {
-    const fixture = TestBed.createComponent(AppComponent);
-    const app = fixture.componentInstance;
-    expect(app.title).toEqual('crpaas-ui');
-  });
-
-  it('should render title', () => {
+  it('should have branding title CRPaaS', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('h1')?.textContent).toContain('Hello, crpaas-ui');
+    expect(compiled.querySelector('.title')?.textContent).toContain('CRPaaS');
   });
 });

@@ -16,17 +16,24 @@ from .config import (
 logger = logging.getLogger(f"uvicorn.{__name__}")
 
 # --- K8s API Client ---
-try:
-    config.load_incluster_config()
-    logger.info("Loaded in-cluster Kubernetes config.")
-except config.ConfigException:
-    logger.warning("Could not load in-cluster config, loading kube-config.")
-    config.load_kube_config()
+def get_k8s_clients():
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        try:
+            config.load_kube_config()
+        except config.ConfigException:
+            logger.warning("Could not load Kubernetes config. K8s features will be unavailable.")
+            return None, None, None, None
+    
+    return (
+        client.BatchV1Api(),
+        client.CoreV1Api(),
+        client.AppsV1Api(),
+        client.CustomObjectsApi()
+    )
 
-batch_v1_api = client.BatchV1Api()
-core_v1_api = client.CoreV1Api()
-apps_v1_api = client.AppsV1Api()
-custom_objects_api = client.CustomObjectsApi()
+batch_v1_api, core_v1_api, apps_v1_api, custom_objects_api = get_k8s_clients() or (None, None, None, None)
 
 
 # --- Helper Functions ---

@@ -1,5 +1,5 @@
-# Stage 1: Build the Angular application
-FROM node:24-alpine AS builder
+# Stage 1: Build & Test the Angular application
+FROM node:24-alpine AS base
 
 WORKDIR /app
 
@@ -12,6 +12,14 @@ RUN npm install
 # Copy the rest of the application source code
 COPY . .
 
+# --- Test Stage ---
+FROM base AS test
+RUN apk add --no-cache chromium
+ENV CHROME_BIN=/usr/bin/chromium-browser
+RUN npx ng test --no-watch --no-progress --browsers=ChromeHeadlessNoSandbox
+
+# --- Build Stage ---
+FROM base AS builder
 # Build the application for production
 RUN npm run build -- --configuration production
 
