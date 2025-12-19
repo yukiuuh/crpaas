@@ -163,6 +163,7 @@ async def request_repository(
 @router.post("/repository/{record_id}/sync", status_code=202, response_model=RepositoryInfo)
 async def sync_repository(
     record_id: int,
+    background_tasks: BackgroundTasks,
     db: aiosqlite.Connection = Depends(get_db_session)
 ):
     """

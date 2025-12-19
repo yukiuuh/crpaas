@@ -203,7 +203,14 @@ async def auto_sync_worker():
                 logger.info(f"Triggering auto-sync for repository ID: {repo['id']} ({repo['repo_url']})")
 
                 try:
-                    # Trigger the clone task
+                    # 1. Update the database record to PENDING first
+                    await db.execute(
+                        "UPDATE repositories SET status = 'PENDING', job_name = 'SYNC', last_synced_at = ? WHERE id = ?",
+                        (current_check_time, repo['id'])
+                    )
+                    await db.commit()
+
+                    # 2. Then trigger the clone task
                     asyncio.create_task(perform_clone_task(
                         repo['id'],
                         repo['repo_url'],
@@ -212,13 +219,6 @@ async def auto_sync_worker():
                         repo['clone_single_branch'],
                         repo['clone_recursive']
                     ))
-
-                    # Update the database record
-                    await db.execute(
-                        "UPDATE repositories SET status = 'PENDING', job_name = 'SYNC', last_synced_at = ? WHERE id = ?",
-                        (current_check_time, repo['id'])
-                    )
-                    await db.commit()
 
                 except Exception as e:
                     logger.error(f"Failed to trigger auto-sync for repo ID {repo['id']}: {e}")
